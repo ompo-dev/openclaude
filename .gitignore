@@ -6,3 +6,13 @@ dist/
 !.env.example
 .openclaude-profile.json
 reports/
+.agno/
+.venv-agno/
+.claude/worktrees/
+python/__pycache__/
+python/agno_tools/__pycache__/
+apps/agent-ui/node_modules/
+apps/agent-ui/.next/
+apps/agent-ui/package-lock.json
+.agno-server*.log
+.agent-ui*.log

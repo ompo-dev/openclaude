@@ -201,6 +201,44 @@ Helpful commands:
 - `bun run verify:privacy`
 - focused `bun test ...` runs for the areas you touch
 
+## Web Workspace
+
+This repository now includes a fully local web workspace for OpenClaude, built from a vendored Agent UI fork plus a local AgentOS wrapper.
+
+From inside the OpenClaude CLI, you can launch it with:
+
+```text
+/web
+```
+
+From the repository root, you can also run:
+
+```bash
+npm run web
+```
+
+Windows PowerShell:
+
+```powershell
+.\scripts\start-agno.ps1
+```
+
+macOS / Linux:
+
+```bash
+./scripts/start-agno.sh
+```
+
+What this web layer adds:
+
+- browser access to the native OpenClaude toolchain through `openclaude_session`
+- local `Chat`, `Conversations`, and `Settings` surfaces
+- runtime profile persistence compatible with `.openclaude-profile.json`
+- router modes that either inherit the OpenClaude runtime or use a separate OpenAI-compatible orchestration model
+- fully local storage and startup with no hosted Agno dependency
+
+See [AGNO_INTEGRATION.md](AGNO_INTEGRATION.md) for architecture, configuration endpoints, documentation alignment, and the current permission-model tradeoff for the web bridge.
+
 ## Repository Structure
 
 - `src/` - core CLI/runtime
