@@ -6,6 +6,7 @@ import { useStore } from '../store'
 import { AgentDetails, TeamDetails, type ChatMessage } from '@/types/os'
 import { getAgentsAPI, getStatusAPI, getTeamsAPI } from '@/api/os'
 import { useQueryState } from 'nuqs'
+import useWorkspaceData from './useWorkspaceData'
 
 const useChatActions = () => {
   const { chatInputRef } = useStore()
@@ -22,6 +23,8 @@ const useChatActions = () => {
   const [agentId, setAgentId] = useQueryState('agent')
   const [teamId, setTeamId] = useQueryState('team')
   const [, setDbId] = useQueryState('db_id')
+  const { refreshWorkspaceContext, refreshTopics, clearWorkspaceData } =
+    useWorkspaceData()
 
   const getStatus = useCallback(async () => {
     try {
@@ -80,6 +83,7 @@ const useChatActions = () => {
       let teams: TeamDetails[] = []
       if (status === 200) {
         setIsEndpointActive(true)
+        await Promise.all([refreshWorkspaceContext(), refreshTopics()])
         teams = await getTeams()
         agents = await getAgents()
 
@@ -138,15 +142,19 @@ const useChatActions = () => {
         }
       } else {
         setIsEndpointActive(false)
+        clearWorkspaceData()
         setMode('agent')
         setSelectedModel('')
         setAgentId(null)
         setTeamId(null)
+        setAgents([])
+        setTeams([])
       }
       return { agents, teams }
     } catch (error) {
       console.error('Error initializing :', error)
       setIsEndpointActive(false)
+      clearWorkspaceData()
       setMode('agent')
       setSelectedModel('')
       setAgentId(null)
@@ -169,6 +177,9 @@ const useChatActions = () => {
     setMode,
     setTeamId,
     setDbId,
+    refreshWorkspaceContext,
+    refreshTopics,
+    clearWorkspaceData,
     agentId,
     teamId
   ])

@@ -10,6 +10,7 @@ import useAIResponseStream from './useAIResponseStream'
 import { ToolCall } from '@/types/os'
 import { useQueryState } from 'nuqs'
 import { getJsonMarkdown } from '@/lib/utils'
+import useWorkspaceData from './useWorkspaceData'
 
 const useAIChatStreamHandler = () => {
   const setMessages = useStore((state) => state.setMessages)
@@ -25,7 +26,9 @@ const useAIChatStreamHandler = () => {
   )
   const setIsStreaming = useStore((state) => state.setIsStreaming)
   const setSessionsData = useStore((state) => state.setSessionsData)
+  const selectedTopicId = useStore((state) => state.selectedTopicId)
   const { streamResponse } = useAIResponseStream()
+  const { assignSessionToTopic, refreshWorkspaceContext } = useWorkspaceData()
 
   const updateMessagesWithErrorState = useCallback(() => {
     setMessages((prevMessages) => {
@@ -139,6 +142,7 @@ const useAIChatStreamHandler = () => {
 
       let lastContent = ''
       let newSessionId = sessionId
+      let topicAssigned = false
       try {
         const endpointUrl = constructEndpointUrl(selectedEndpoint)
 
@@ -200,6 +204,17 @@ const useAIChatStreamHandler = () => {
                   }
                   return [sessionData, ...(prevSessionsData ?? [])]
                 })
+              }
+              if (
+                chunk.session_id &&
+                selectedTopicId &&
+                !topicAssigned
+              ) {
+                topicAssigned = true
+                void assignSessionToTopic(
+                  selectedTopicId,
+                  chunk.session_id as string
+                ).catch(() => undefined)
               }
             } else if (
               chunk.event === RunEvent.ToolCallStarted ||
@@ -328,6 +343,7 @@ const useAIChatStreamHandler = () => {
               chunk.event === RunEvent.TeamRunCancelled
             ) {
               updateMessagesWithErrorState()
+              void refreshWorkspaceContext()
               const errorContent =
                 (chunk.content as string) ||
                 (chunk.event === RunEvent.TeamRunCancelled
@@ -352,6 +368,7 @@ const useAIChatStreamHandler = () => {
               chunk.event === RunEvent.RunCompleted ||
               chunk.event === RunEvent.TeamRunCompleted
             ) {
+              void refreshWorkspaceContext()
               setMessages((prevMessages) => {
                 const newMessages = prevMessages.map((message, index) => {
                   if (
@@ -397,6 +414,7 @@ const useAIChatStreamHandler = () => {
           },
           onError: (error) => {
             updateMessagesWithErrorState()
+            void refreshWorkspaceContext()
             setStreamingErrorMessage(error.message)
             if (newSessionId) {
               setSessionsData(
@@ -437,13 +455,16 @@ const useAIChatStreamHandler = () => {
       agentId,
       teamId,
       mode,
+      selectedTopicId,
       setStreamingErrorMessage,
       setIsStreaming,
       focusChatInput,
       setSessionsData,
       sessionId,
       setSessionId,
-      processChunkToolCalls
+      processChunkToolCalls,
+      assignSessionToTopic,
+      refreshWorkspaceContext
     ]
   )
 

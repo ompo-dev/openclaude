@@ -12,6 +12,11 @@ const VIEW_ITEMS = [
     icon: 'agent'
   },
   {
+    id: 'project',
+    label: 'Project',
+    icon: 'nextjs'
+  },
+  {
     id: 'conversations',
     label: 'Conversations',
     icon: 'sheet'
@@ -29,7 +34,7 @@ const WorkspaceViewSelector = () => {
   return (
     <div className="flex flex-col gap-2">
       <div className="text-xs font-medium uppercase text-primary">Workspace</div>
-      <div className="grid grid-cols-3 gap-2">
+      <div className="grid grid-cols-2 gap-2">
         {VIEW_ITEMS.map((item) => {
           const active = workspaceView === item.id
           return (

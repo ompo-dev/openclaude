@@ -29,6 +29,21 @@ import {
 
 import SectionCard from './SectionCard'
 
+type AgentModelDraft = {
+  id: string
+  name: string
+  base_url: string
+  api_key: string
+  api_key_masked: string | null
+  api_key_configured: boolean
+}
+
+type AgentRoutingDraft = {
+  id: string
+  key: string
+  model: string
+}
+
 type DraftState = {
   runtime: {
     profile: string
@@ -45,48 +60,41 @@ type DraftState = {
     api_key: string
     provider_name: string
   }
+  native_settings: {
+    agent_models: AgentModelDraft[]
+    agent_routing: AgentRoutingDraft[]
+  }
 }
 
 const PROFILE_OPTIONS = [
-  {
-    value: 'anthropic',
-    label: 'Anthropic first-party',
-    defaultModel: 'claude-sonnet-4-6'
-  },
-  {
-    value: 'openai',
-    label: 'OpenAI-compatible',
-    defaultModel: 'gpt-4.1-mini'
-  },
-  { value: 'ollama', label: 'Ollama local', defaultModel: 'qwen2.5-coder:7b' },
-  {
-    value: 'gemini',
-    label: 'Gemini OpenAI-compatible',
-    defaultModel: 'gemini-2.0-flash'
-  },
-  { value: 'codex', label: 'Codex', defaultModel: 'codexplan' },
-  {
-    value: 'atomic-chat',
-    label: 'Atomic Chat local',
-    defaultModel: 'llama3:8b'
-  }
-]
+  ['anthropic', 'Anthropic first-party', 'claude-sonnet-4-6'],
+  ['openai', 'OpenAI-compatible', 'gpt-4.1-mini'],
+  ['ollama', 'Ollama local', 'qwen2.5-coder:7b'],
+  ['gemini', 'Gemini OpenAI-compatible', 'gemini-2.0-flash'],
+  ['codex', 'Codex', 'codexplan'],
+  ['atomic-chat', 'Atomic Chat local', 'llama3:8b']
+] as const
 
 const ROUTER_MODE_OPTIONS = [
-  { value: 'inherit', label: 'Inherit runtime profile' },
-  { value: 'explicit', label: 'Use explicit router model' }
-]
+  ['inherit', 'Inherit runtime profile'],
+  ['explicit', 'Use explicit router model']
+] as const
 
 const GEMINI_AUTH_OPTIONS = [
-  { value: 'api-key', label: 'API key' },
-  { value: 'access-token', label: 'Access token' },
-  { value: 'adc', label: 'ADC' }
-]
+  ['api-key', 'API key'],
+  ['access-token', 'Access token'],
+  ['adc', 'ADC']
+] as const
 
 const inputClassName =
   'h-10 w-full rounded-xl border border-primary/10 bg-background-secondary px-3 text-sm text-secondary outline-none transition-colors placeholder:text-muted focus:border-primary/30'
 
 const fieldLabelClassName = 'mb-2 text-[11px] uppercase text-muted'
+
+const createDraftId = () =>
+  typeof crypto !== 'undefined' && 'randomUUID' in crypto
+    ? crypto.randomUUID()
+    : `draft-${Date.now()}-${Math.random().toString(16).slice(2)}`
 
 const buildDraft = (snapshot: IntegrationSnapshot): DraftState => ({
   runtime: {
@@ -105,6 +113,21 @@ const buildDraft = (snapshot: IntegrationSnapshot): DraftState => ({
       snapshot.router.base_url || snapshot.router.effective_base_url || '',
     api_key: '',
     provider_name: snapshot.router.provider_name || 'OpenAI-Compatible'
+  },
+  native_settings: {
+    agent_models: snapshot.native_settings.agent_models.map((entry) => ({
+      id: createDraftId(),
+      name: entry.name,
+      base_url: entry.base_url,
+      api_key: '',
+      api_key_masked: entry.api_key_masked,
+      api_key_configured: entry.api_key_configured
+    })),
+    agent_routing: snapshot.native_settings.agent_routing.map((entry) => ({
+      id: createDraftId(),
+      key: entry.key,
+      model: entry.model
+    }))
   }
 })
 
@@ -177,37 +200,29 @@ const SettingsView = () => {
     [draft?.runtime.profile, snapshot?.providers]
   )
 
-  const runtimeDescription = useMemo(() => {
-    switch (snapshot?.runtime.source) {
-      case 'claude-config':
-        return 'This runtime is inheriting the Claude Code login from your local config directory. Leave the credential blank to keep using the same Anthropic account that powers the CLI.'
-      case 'profile-file':
-        return 'This profile is persisted in .openclaude-profile.json and is reused by the native OpenClaude runtime invoked from the web UI.'
-      case 'environment':
-        return 'This runtime is currently being resolved from environment variables inherited by the web process.'
-      default:
-        return 'Configure the OpenClaude runtime profile and keep the local web router aligned with the same provider stack used by the CLI.'
-    }
-  }, [snapshot?.runtime.source])
+  const configuredAgentModels = useMemo(
+    () =>
+      draft?.native_settings.agent_models
+        .map((entry) => entry.name.trim())
+        .filter(
+          (entry, index, collection) =>
+            entry.length > 0 && collection.indexOf(entry) === index
+        ) || [],
+    [draft?.native_settings.agent_models]
+  )
 
-  const runtimeCredentialPlaceholder = useMemo(() => {
-    if (
-      draft?.runtime.profile === 'anthropic' &&
-      snapshot?.runtime.profile === 'anthropic' &&
-      snapshot.runtime.source === 'claude-config'
-    ) {
-      return 'Inherited from Claude Code login'
-    }
+  const routingKeySuggestions = useMemo(() => {
+    if (!snapshot || !draft) return []
 
-    return (
-      snapshot?.runtime.api_key_masked || 'Leave blank to keep current secret'
+    return Array.from(
+      new Set([
+        ...snapshot.native_settings.recommended_routing_keys,
+        ...draft.native_settings.agent_routing
+          .map((entry) => entry.key.trim())
+          .filter(Boolean)
+      ])
     )
-  }, [
-    draft?.runtime.profile,
-    snapshot?.runtime.api_key_masked,
-    snapshot?.runtime.profile,
-    snapshot?.runtime.source
-  ])
+  }, [draft, snapshot])
 
   const loadConfig = async () => {
     setLoading(true)
@@ -228,6 +243,40 @@ const SettingsView = () => {
     void loadConfig()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedEndpoint, authToken])
+
+  const runtimeDescription = useMemo(() => {
+    switch (snapshot?.runtime.source) {
+      case 'claude-config':
+        return 'This runtime is inheriting the Claude Code login from your local config directory. Leave the credential blank to keep using the same Anthropic account that powers the CLI.'
+      case 'profile-file':
+        return 'This profile is persisted in .openclaude-profile.json and is reused by the native OpenClaude runtime invoked from the web UI.'
+      case 'environment':
+        return 'This runtime is currently being resolved from environment variables inherited by the web process.'
+      default:
+        return 'Configure the OpenClaude runtime profile and keep the local web router aligned with the same provider stack used by the CLI.'
+    }
+  }, [snapshot?.runtime.source])
+
+  const runtimeCredentialPlaceholder = useMemo(() => {
+    if (!snapshot || !draft) {
+      return 'Leave blank to keep current secret'
+    }
+
+    if (
+      draft.runtime.profile === 'anthropic' &&
+      snapshot.runtime.profile === 'anthropic' &&
+      snapshot.runtime.source === 'claude-config'
+    ) {
+      return 'Inherited from Claude Code login'
+    }
+
+    return (
+      snapshot.runtime.api_key_masked || 'Leave blank to keep current secret'
+    )
+  }, [
+    draft,
+    snapshot,
+  ])
 
   const handleRuntimeField = (
     field: keyof DraftState['runtime'],
@@ -263,9 +312,60 @@ const SettingsView = () => {
     )
   }
 
+  const handleAgentModelField = (
+    rowId: string,
+    field: keyof AgentModelDraft,
+    value: string
+  ) => {
+    setDraft((current) =>
+      current
+        ? {
+            ...current,
+            native_settings: {
+              ...current.native_settings,
+              agent_models: current.native_settings.agent_models.map((entry) =>
+                entry.id === rowId
+                  ? {
+                      ...entry,
+                      [field]: value
+                    }
+                  : entry
+              )
+            }
+          }
+        : current
+    )
+  }
+
+  const handleRoutingField = (
+    rowId: string,
+    field: keyof AgentRoutingDraft,
+    value: string
+  ) => {
+    setDraft((current) =>
+      current
+        ? {
+            ...current,
+            native_settings: {
+              ...current.native_settings,
+              agent_routing: current.native_settings.agent_routing.map((entry) =>
+                entry.id === rowId
+                  ? {
+                      ...entry,
+                      [field]: value
+                    }
+                  : entry
+              )
+            }
+          }
+        : current
+    )
+  }
+
   const handleProfileChange = (profile: string) => {
     const provider = snapshot?.providers.find((item) => item.id === profile)
-    const profileOption = PROFILE_OPTIONS.find((item) => item.value === profile)
+    const profileOption = PROFILE_OPTIONS.find((item) => item[0] === profile)
+
     setDraft((current) =>
       current
         ? {
@@ -276,7 +376,7 @@ const SettingsView = () => {
               model:
                 current.runtime.profile === profile
                   ? current.runtime.model
-                  : profileOption?.defaultModel || current.runtime.model,
+                  : profileOption?.[2] || current.runtime.model,
               base_url:
                 provider?.base_url ||
                 provider?.default_base_url ||
@@ -287,28 +387,142 @@ const SettingsView = () => {
     )
   }
 
+  const addAgentModel = () => {
+    setDraft((current) =>
+      current
+        ? {
+            ...current,
+            native_settings: {
+              ...current.native_settings,
+              agent_models: [
+                ...current.native_settings.agent_models,
+                {
+                  id: createDraftId(),
+                  name: '',
+                  base_url: '',
+                  api_key: '',
+                  api_key_masked: null,
+                  api_key_configured: false
+                }
+              ]
+            }
+          }
+        : current
+    )
+  }
+
+  const removeAgentModel = (rowId: string) => {
+    setDraft((current) => {
+      if (!current) return current
+
+      const removedModel = current.native_settings.agent_models.find(
+        (entry) => entry.id === rowId
+      )
+
+      return {
+        ...current,
+        native_settings: {
+          ...current.native_settings,
+          agent_models: current.native_settings.agent_models.filter(
+            (entry) => entry.id !== rowId
+          ),
+          agent_routing: current.native_settings.agent_routing.map((entry) =>
+            removedModel?.name.trim() === entry.model
+              ? {
+                  ...entry,
+                  model: ''
+                }
+              : entry
+          )
+        }
+      }
+    })
+  }
+
+  const addRoutingRule = () => {
+    setDraft((current) =>
+      current
+        ? {
+            ...current,
+            native_settings: {
+              ...current.native_settings,
+              agent_routing: [
+                ...current.native_settings.agent_routing,
+                {
+                  id: createDraftId(),
+                  key: '',
+                  model: ''
+                }
+              ]
+            }
+          }
+        : current
+    )
+  }
+
+  const removeRoutingRule = (rowId: string) => {
+    setDraft((current) =>
+      current
+        ? {
+            ...current,
+            native_settings: {
+              ...current.native_settings,
+              agent_routing: current.native_settings.agent_routing.filter(
+                (entry) => entry.id !== rowId
+              )
+            }
+          }
+        : current
+    )
+  }
+
   const handleSave = async () => {
     if (!draft) return
 
+    const currentDraft = draft
     const payload: IntegrationConfigPayload = {
       runtime: {
-        profile: draft.runtime.profile,
-        model: draft.runtime.model,
-        base_url: draft.runtime.base_url,
-        gemini_auth_mode: draft.runtime.gemini_auth_mode,
-        chatgpt_account_id: draft.runtime.chatgpt_account_id || undefined,
-        ...(draft.runtime.api_key ? { api_key: draft.runtime.api_key } : {})
+        profile: currentDraft.runtime.profile,
+        model: currentDraft.runtime.model,
+        base_url: currentDraft.runtime.base_url,
+        gemini_auth_mode: currentDraft.runtime.gemini_auth_mode,
+        chatgpt_account_id: currentDraft.runtime.chatgpt_account_id || undefined,
+        ...(currentDraft.runtime.api_key
+          ? { api_key: currentDraft.runtime.api_key }
+          : {})
       },
       router: {
-        mode: draft.router.mode,
-        provider_name: draft.router.provider_name || undefined,
-        ...(draft.router.mode === 'explicit'
+        mode: currentDraft.router.mode,
+        provider_name: currentDraft.router.provider_name || undefined,
+        ...(currentDraft.router.mode === 'explicit'
           ? {
-              model_id: draft.router.model_id,
-              base_url: draft.router.base_url,
-              ...(draft.router.api_key ? { api_key: draft.router.api_key } : {})
+              model_id: currentDraft.router.model_id,
+              base_url: currentDraft.router.base_url,
+              ...(currentDraft.router.api_key
+                ? { api_key: currentDraft.router.api_key }
+                : {})
             }
           : {})
+      },
+      native_settings: {
+        agent_models: currentDraft.native_settings.agent_models
+          .map((entry) => ({
+            name: entry.name.trim(),
+            base_url: entry.base_url.trim(),
+            ...(entry.api_key ? { api_key: entry.api_key } : {})
+          }))
+          .filter((entry) => entry.name && entry.base_url),
+        agent_routing: currentDraft.native_settings.agent_routing.reduce<Record<string, string>>(
+          (collection, entry) => {
+            const key = entry.key.trim()
+            const model = entry.model.trim()
+            if (key && model) {
+              collection[key] = model
+            }
+            return collection
+          },
+          {}
+        )
       }
     }
 
@@ -353,14 +567,13 @@ const SettingsView = () => {
           OpenClaude Web configuration
         </h1>
         <p className="mt-2 max-w-3xl text-sm text-muted">
-          Configure the OpenClaude runtime profile, keep the local router in
-          sync and inspect which platform capabilities were adapted into this
-          local fork.
+          Configure the OpenClaude runtime profile, the local router and the
+          native model registry used by OpenClaude itself.
         </p>
       </div>
 
       <div className="flex-1 overflow-y-auto px-8 py-6">
-        <div className="mb-6 grid gap-3 md:grid-cols-4">
+        <div className="mb-6 grid gap-3 md:grid-cols-5">
           <div className="rounded-xl border border-primary/10 bg-background-secondary px-4 py-3">
             <div className="mb-1 text-[11px] uppercase text-muted">Runtime</div>
             <div className="text-sm font-medium text-secondary">
@@ -385,10 +598,18 @@ const SettingsView = () => {
           </div>
           <div className="rounded-xl border border-primary/10 bg-background-secondary px-4 py-3">
             <div className="mb-1 text-[11px] uppercase text-muted">
-              Storage
+              Agent Models
             </div>
             <div className="text-sm font-medium text-secondary">
-              {snapshot.status.agentos_db}
+              {snapshot.native_settings.agent_models.length} configured
+            </div>
+          </div>
+          <div className="rounded-xl border border-primary/10 bg-background-secondary px-4 py-3">
+            <div className="mb-1 text-[11px] uppercase text-muted">
+              Settings File
+            </div>
+            <div className="text-sm font-medium text-secondary">
+              {snapshot.native_settings.exists ? 'Detected' : 'Will be created'}
             </div>
           </div>
         </div>
@@ -405,13 +626,13 @@ const SettingsView = () => {
                     value={draft.runtime.profile}
                     onValueChange={handleProfileChange}
                   >
-                    <SelectTrigger className="rounded-xl border-primary/10 bg-background-secondary">
+                    <SelectTrigger>
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
-                      {PROFILE_OPTIONS.map((option) => (
-                        <SelectItem key={option.value} value={option.value}>
-                          {option.label}
+                      {PROFILE_OPTIONS.map(([value, label]) => (
+                        <SelectItem key={value} value={value}>
+                          {label}
                         </SelectItem>
                       ))}
                     </SelectContent>
@@ -456,13 +677,13 @@ const SettingsView = () => {
                         handleRuntimeField('gemini_auth_mode', value)
                       }
                     >
-                      <SelectTrigger className="rounded-xl border-primary/10 bg-background-secondary">
+                      <SelectTrigger>
                         <SelectValue />
                       </SelectTrigger>
                       <SelectContent>
-                        {GEMINI_AUTH_OPTIONS.map((option) => (
-                          <SelectItem key={option.value} value={option.value}>
-                            {option.label}
+                        {GEMINI_AUTH_OPTIONS.map(([value, label]) => (
+                          <SelectItem key={value} value={value}>
+                            {label}
                           </SelectItem>
                         ))}
                       </SelectContent>
@@ -507,13 +728,13 @@ const SettingsView = () => {
                     value={draft.router.mode}
                     onValueChange={(value) => handleRouterField('mode', value)}
                   >
-                    <SelectTrigger className="rounded-xl border-primary/10 bg-background-secondary">
+                    <SelectTrigger>
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
-                      {ROUTER_MODE_OPTIONS.map((option) => (
-                        <SelectItem key={option.value} value={option.value}>
-                          {option.label}
+                      {ROUTER_MODE_OPTIONS.map(([value, label]) => (
+                        <SelectItem key={value} value={value}>
+                          {label}
                         </SelectItem>
                       ))}
                     </SelectContent>
@@ -572,6 +793,206 @@ const SettingsView = () => {
               <div className="mt-4 rounded-xl border border-primary/10 bg-background-secondary px-4 py-3 text-sm text-muted">
                 Effective router: {snapshot.router.effective_provider || 'pending'} /{' '}
                 {snapshot.router.effective_model_id || 'pending'}
+              </div>
+            </SectionCard>
+
+            <SectionCard
+              title="Agent Models"
+              description="These entries are saved into the native OpenClaude settings file so subagent routing and quick runtime switching use the same model registry."
+              action={
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={addAgentModel}
+                  className="rounded-xl"
+                >
+                  <Icon type="plus-icon" size="xs" />
+                  Add Model
+                </Button>
+              }
+            >
+              <div className="mb-4 rounded-xl border border-primary/10 bg-background-secondary px-4 py-3 text-sm text-muted">
+                Settings path: {snapshot.native_settings.settings_path}
+              </div>
+              <div className="space-y-3">
+                {draft.native_settings.agent_models.length > 0 ? (
+                  draft.native_settings.agent_models.map((entry) => (
+                    <div
+                      key={entry.id}
+                      className="rounded-xl border border-primary/10 bg-background-secondary p-4"
+                    >
+                      <div className="mb-4 grid gap-4 lg:grid-cols-[1fr,1.3fr,1fr,auto]">
+                        <Field label="Model Name">
+                          <input
+                            className={inputClassName}
+                            value={entry.name}
+                            onChange={(event) =>
+                              handleAgentModelField(
+                                entry.id,
+                                'name',
+                                event.target.value
+                              )
+                            }
+                            placeholder="deepseek-chat"
+                          />
+                        </Field>
+                        <Field label="Base URL">
+                          <input
+                            className={inputClassName}
+                            value={entry.base_url}
+                            onChange={(event) =>
+                              handleAgentModelField(
+                                entry.id,
+                                'base_url',
+                                event.target.value
+                              )
+                            }
+                            placeholder="https://api.deepseek.com/v1"
+                          />
+                        </Field>
+                        <Field label="API Key">
+                          <input
+                            className={inputClassName}
+                            type="password"
+                            value={entry.api_key}
+                            onChange={(event) =>
+                              handleAgentModelField(
+                                entry.id,
+                                'api_key',
+                                event.target.value
+                              )
+                            }
+                            placeholder={
+                              entry.api_key_masked ||
+                              'Leave blank to keep current secret'
+                            }
+                          />
+                        </Field>
+                        <div className="flex items-end">
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            className="h-10 rounded-xl px-3 text-destructive hover:text-destructive"
+                            onClick={() => removeAgentModel(entry.id)}
+                          >
+                            Remove
+                          </Button>
+                        </div>
+                      </div>
+                      <div className="text-xs text-muted">
+                        {entry.api_key_configured || entry.api_key_masked
+                          ? 'Existing secret is preserved when this field stays blank.'
+                          : 'No secret stored for this model yet.'}
+                      </div>
+                    </div>
+                  ))
+                ) : (
+                  <div className="rounded-xl border border-dashed border-primary/10 px-4 py-6 text-sm text-muted">
+                    No agent models saved yet. Add OpenAI-compatible model endpoints here to reuse them in routing and in the sidebar quick switcher.
+                  </div>
+                )}
+              </div>
+            </SectionCard>
+
+            <SectionCard
+              title="Agent Routing"
+              description="Map subagent roles to saved model names exactly like the native OpenClaude settings schema."
+              action={
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={addRoutingRule}
+                  className="rounded-xl"
+                >
+                  <Icon type="plus-icon" size="xs" />
+                  Add Rule
+                </Button>
+              }
+            >
+              <div className="mb-4 flex flex-wrap gap-2">
+                {routingKeySuggestions.map((key) => (
+                  <span
+                    key={key}
+                    className="rounded-full border border-primary/10 bg-background-secondary px-3 py-1.5 text-xs text-secondary"
+                  >
+                    {key}
+                  </span>
+                ))}
+              </div>
+              <div className="space-y-3">
+                {draft.native_settings.agent_routing.length > 0 ? (
+                  draft.native_settings.agent_routing.map((entry) => (
+                    <div
+                      key={entry.id}
+                      className="rounded-xl border border-primary/10 bg-background-secondary p-4"
+                    >
+                      <div className="grid gap-4 md:grid-cols-[1fr,1fr,auto]">
+                        <Field label="Route Key">
+                          <input
+                            className={inputClassName}
+                            value={entry.key}
+                            onChange={(event) =>
+                              handleRoutingField(
+                                entry.id,
+                                'key',
+                                event.target.value
+                              )
+                            }
+                            placeholder="Explore"
+                          />
+                        </Field>
+                        <Field label="Target Model">
+                          {configuredAgentModels.length > 0 ? (
+                            <Select
+                              value={entry.model}
+                              onValueChange={(value) =>
+                                handleRoutingField(entry.id, 'model', value)
+                              }
+                            >
+                              <SelectTrigger>
+                                <SelectValue placeholder="Select a saved model" />
+                              </SelectTrigger>
+                              <SelectContent>
+                                {configuredAgentModels.map((modelName) => (
+                                  <SelectItem key={modelName} value={modelName}>
+                                    {modelName}
+                                  </SelectItem>
+                                ))}
+                              </SelectContent>
+                            </Select>
+                          ) : (
+                            <input
+                              className={inputClassName}
+                              value={entry.model}
+                              onChange={(event) =>
+                                handleRoutingField(
+                                  entry.id,
+                                  'model',
+                                  event.target.value
+                                )
+                              }
+                              placeholder="gpt-4o"
+                            />
+                          )}
+                        </Field>
+                        <div className="flex items-end">
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            className="h-10 rounded-xl px-3 text-destructive hover:text-destructive"
+                            onClick={() => removeRoutingRule(entry.id)}
+                          >
+                            Remove
+                          </Button>
+                        </div>
+                      </div>
+                    </div>
+                  ))
+                ) : (
+                  <div className="rounded-xl border border-dashed border-primary/10 px-4 py-6 text-sm text-muted">
+                    No routing rules yet. Add entries like `Explore`, `Plan`, `general-purpose`, `frontend-dev` and `default`.
+                  </div>
+                )}
               </div>
             </SectionCard>
           </div>

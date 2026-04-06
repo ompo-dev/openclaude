@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 import os
 import re
+import subprocess
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -17,8 +19,10 @@ WORKSPACE_ROOT = Path(__file__).resolve().parents[2]
 AGNO_STATE_DIR = WORKSPACE_ROOT / ".agno"
 AGNO_DB_PATH = AGNO_STATE_DIR / "agentos.sqlite"
 AGNO_ROUTER_CONFIG_PATH = AGNO_STATE_DIR / "router.json"
+AGNO_TOPICS_PATH = AGNO_STATE_DIR / "topics.json"
 OPENCLAUDE_DIST_PATH = WORKSPACE_ROOT / "dist" / "cli.mjs"
 OPENCLAUDE_PROFILE_PATH = WORKSPACE_ROOT / ".openclaude-profile.json"
+OPENCLAUDE_WEB_CATALOG_PATH = WORKSPACE_ROOT / "scripts" / "openclaude-web-catalog.ts"
 
 DEFAULT_AGENTOS_HOST = os.getenv("AGNO_HOST", "127.0.0.1")
 DEFAULT_AGENTOS_PORT = int(os.getenv("AGNO_PORT", "7777"))
@@ -99,6 +103,17 @@ PLATFORM_FEATURES = [
     },
 ]
 
+MAX_CHANGED_FILES = 12
+MAX_PATCH_CHARS = 2400
+MAX_UNTRACKED_PREVIEW_LINES = 80
+STANDARD_AGENT_ROUTING_KEYS = (
+    "default",
+    "Explore",
+    "Plan",
+    "general-purpose",
+    "frontend-dev",
+)
+
 
 def ensure_state_dir() -> Path:
     AGNO_STATE_DIR.mkdir(parents=True, exist_ok=True)
@@ -118,6 +133,11 @@ def _pick(env: dict[str, str], *keys: str) -> str | None:
         if value:
             return value
     return None
+
+
+def _is_env_truthy(key: str) -> bool:
+    value = (_trimmed(os.getenv(key)) or "").lower()
+    return value in {"1", "true", "yes", "on"}
 
 
 def _build_default_agentos_cors() -> list[str]:
@@ -201,6 +221,25 @@ def get_openclaude_config_home_dir() -> Path:
 
 def get_openclaude_credentials_path() -> Path:
     return get_openclaude_config_home_dir() / ".credentials.json"
+
+
+def get_openclaude_settings_path() -> Path:
+    filename = "cowork_settings.json" if _is_env_truthy("CLAUDE_CODE_USE_COWORK_PLUGINS") else "settings.json"
+    return get_openclaude_config_home_dir() / filename
+
+
+def load_openclaude_settings() -> dict[str, Any]:
+    return _read_json_file(get_openclaude_settings_path(), {})
+
+
+def save_openclaude_settings(settings: dict[str, Any]) -> dict[str, Any]:
+    settings_path = get_openclaude_settings_path()
+    settings_path.parent.mkdir(parents=True, exist_ok=True)
+    settings_path.write_text(
+        json.dumps(settings, indent=2),
+        encoding="utf-8",
+    )
+    return settings
 
 
 def load_claude_code_credentials() -> dict[str, Any] | None:
@@ -668,6 +707,475 @@ def list_openclaude_tools() -> list[dict[str, str]]:
     return items
 
 
+def _read_json_file(path: Path, fallback: dict[str, Any]) -> dict[str, Any]:
+    if not path.exists():
+        return fallback
+
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return fallback
+
+    return data if isinstance(data, dict) else fallback
+
+
+def _write_json_file(path: Path, payload: dict[str, Any]) -> dict[str, Any]:
+    ensure_state_dir()
+    path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    return payload
+
+
+def _normalize_agent_models(raw_value: Any) -> dict[str, dict[str, str]]:
+    if not isinstance(raw_value, dict):
+        return {}
+
+    normalized: dict[str, dict[str, str]] = {}
+    for raw_name, raw_config in raw_value.items():
+        name = _trimmed(str(raw_name) if raw_name is not None else None)
+        if not name or not isinstance(raw_config, dict):
+            continue
+
+        base_url = _trimmed(raw_config.get("base_url"))
+        if not base_url:
+            continue
+
+        api_key = raw_config.get("api_key")
+        normalized[name] = {
+            "base_url": base_url,
+            "api_key": api_key.strip() if isinstance(api_key, str) else "",
+        }
+
+    return dict(sorted(normalized.items(), key=lambda item: item[0].lower()))
+
+
+def _normalize_agent_routing(raw_value: Any) -> dict[str, str]:
+    if not isinstance(raw_value, dict):
+        return {}
+
+    normalized: dict[str, str] = {}
+    for raw_key, raw_model in raw_value.items():
+        key = _trimmed(str(raw_key) if raw_key is not None else None)
+        model_name = _trimmed(str(raw_model) if raw_model is not None else None)
+        if not key or not model_name:
+            continue
+        normalized[key] = model_name
+
+    def routing_sort(item: tuple[str, str]) -> tuple[int, str]:
+        key = item[0]
+        try:
+            return (STANDARD_AGENT_ROUTING_KEYS.index(key), key.lower())
+        except ValueError:
+            return (len(STANDARD_AGENT_ROUTING_KEYS), key.lower())
+
+    return dict(sorted(normalized.items(), key=routing_sort))
+
+
+def _slugify(value: str) -> str:
+    slug = re.sub(r"[^a-z0-9]+", "-", value.lower()).strip("-")
+    return slug or "topic"
+
+
+def _run_git(
+    args: list[str],
+    *,
+    cwd: Path | None = None,
+    timeout_seconds: int = 10,
+) -> str | None:
+    try:
+        completed = subprocess.run(
+            ["git", *args],
+            cwd=str((cwd or WORKSPACE_ROOT).resolve()),
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=timeout_seconds,
+        )
+    except Exception:
+        return None
+
+    if completed.returncode != 0:
+        return None
+
+    output = completed.stdout.strip()
+    return output or None
+
+
+def _parse_diff_stats(diff_output: str | None) -> dict[str, dict[str, int | None]]:
+    stats: dict[str, dict[str, int | None]] = {}
+    if not diff_output:
+        return stats
+
+    for line in diff_output.splitlines():
+        parts = line.split("\t", 2)
+        if len(parts) != 3:
+            continue
+
+        insertions_raw, deletions_raw, path = parts
+        path_key = path.rsplit(" -> ", 1)[-1].strip()
+        stats[path_key] = {
+            "insertions": None if insertions_raw == "-" else int(insertions_raw),
+            "deletions": None if deletions_raw == "-" else int(deletions_raw),
+        }
+
+    return stats
+
+
+def _status_to_kind(staged_status: str, unstaged_status: str) -> str:
+    statuses = {staged_status, unstaged_status}
+
+    if "?" in statuses:
+        return "untracked"
+    if "R" in statuses:
+        return "renamed"
+    if "D" in statuses:
+        return "deleted"
+    if "A" in statuses:
+        return "added"
+    if "M" in statuses:
+        return "modified"
+
+    return "changed"
+
+
+def _merge_file_stats(
+    cached_stats: dict[str, int | None] | None,
+    unstaged_stats: dict[str, int | None] | None,
+) -> dict[str, int | None]:
+    insertions_values = [
+        value
+        for value in (
+            (cached_stats or {}).get("insertions"),
+            (unstaged_stats or {}).get("insertions"),
+        )
+        if isinstance(value, int)
+    ]
+    deletions_values = [
+        value
+        for value in (
+            (cached_stats or {}).get("deletions"),
+            (unstaged_stats or {}).get("deletions"),
+        )
+        if isinstance(value, int)
+    ]
+
+    return {
+        "insertions": sum(insertions_values) if insertions_values else None,
+        "deletions": sum(deletions_values) if deletions_values else None,
+    }
+
+
+def _read_untracked_preview(path: Path) -> tuple[str | None, bool]:
+    if not path.is_file():
+        return None, False
+
+    try:
+        content = path.read_text(encoding="utf-8")
+    except Exception:
+        return None, False
+
+    lines = content.splitlines()
+    visible_lines = lines[:MAX_UNTRACKED_PREVIEW_LINES]
+    preview = "\n".join(visible_lines).strip()
+    if not preview:
+        return None, False
+
+    truncated = len(lines) > MAX_UNTRACKED_PREVIEW_LINES or len(preview) > MAX_PATCH_CHARS
+    if len(preview) > MAX_PATCH_CHARS:
+        preview = preview[:MAX_PATCH_CHARS].rstrip() + "\n... preview truncated"
+
+    return preview, truncated
+
+
+def _build_patch_preview(
+    *,
+    repo_root: Path,
+    relative_path: str,
+    staged_status: str,
+    unstaged_status: str,
+    kind: str,
+) -> tuple[str | None, bool]:
+    if kind == "untracked":
+        return _read_untracked_preview(repo_root / relative_path)
+
+    fragments: list[str] = []
+    if staged_status not in {" ", "?"}:
+        staged_patch = _run_git(
+            ["diff", "--cached", "--no-ext-diff", "--unified=3", "--", relative_path],
+            cwd=repo_root,
+        )
+        if staged_patch:
+            fragments.append(staged_patch)
+
+    if unstaged_status not in {" ", "?"}:
+        unstaged_patch = _run_git(
+            ["diff", "--no-ext-diff", "--unified=3", "--", relative_path],
+            cwd=repo_root,
+        )
+        if unstaged_patch:
+            fragments.append(unstaged_patch)
+
+    if not fragments:
+        return None, False
+
+    combined = "\n\n".join(fragment for fragment in fragments if fragment).strip()
+    if not combined:
+        return None, False
+
+    truncated = len(combined) > MAX_PATCH_CHARS
+    if truncated:
+        combined = combined[:MAX_PATCH_CHARS].rstrip() + "\n... patch truncated"
+
+    return combined, truncated
+
+
+def get_workspace_context() -> dict[str, Any]:
+    repo_root_value = _run_git(["rev-parse", "--show-toplevel"])
+    topics = list_topics()
+
+    if not repo_root_value:
+        return {
+            "workspace_root": str(WORKSPACE_ROOT),
+            "project_root": str(WORKSPACE_ROOT),
+            "project_label": WORKSPACE_ROOT.name,
+            "repo_root": None,
+            "repo_name": WORKSPACE_ROOT.name,
+            "origin_url": None,
+            "branch": None,
+            "head": None,
+            "upstream": None,
+            "ahead": 0,
+            "behind": 0,
+            "is_git_repo": False,
+            "is_dirty": False,
+            "changed_file_count": 0,
+            "topic_count": len(topics),
+            "changed_files": [],
+        }
+
+    repo_root = Path(repo_root_value).resolve()
+    repo_name = repo_root.name
+    branch_name = _run_git(["branch", "--show-current"], cwd=repo_root)
+    head = _run_git(["rev-parse", "--short", "HEAD"], cwd=repo_root)
+    origin_url = _run_git(["remote", "get-url", "origin"], cwd=repo_root)
+    status_output = _run_git(["status", "--porcelain=v1", "--branch", "--untracked-files=all"], cwd=repo_root) or ""
+    numstat = _parse_diff_stats(_run_git(["diff", "--numstat"], cwd=repo_root))
+    cached_numstat = _parse_diff_stats(_run_git(["diff", "--cached", "--numstat"], cwd=repo_root))
+
+    branch = branch_name
+    upstream = None
+    ahead = 0
+    behind = 0
+
+    changed_files: list[dict[str, Any]] = []
+    status_lines = status_output.splitlines()
+    if status_lines and status_lines[0].startswith("## "):
+        branch_info = status_lines[0][3:]
+        branch_part, separator, tracking_info = branch_info.partition("...")
+        if branch_part and branch_part != "HEAD (no branch)":
+            branch = branch_part
+
+        if separator and tracking_info:
+            upstream = tracking_info
+            tracking_meta = ""
+            if " [" in tracking_info:
+                upstream, _, tracking_meta = tracking_info.partition(" [")
+                tracking_meta = tracking_meta.rstrip("]")
+            for item in tracking_meta.split(", "):
+                if item.startswith("ahead "):
+                    ahead = int(item.replace("ahead ", "") or "0")
+                elif item.startswith("behind "):
+                    behind = int(item.replace("behind ", "") or "0")
+
+        status_lines = status_lines[1:]
+
+    for line in status_lines:
+        if len(changed_files) >= MAX_CHANGED_FILES:
+            break
+
+        if len(line) < 3:
+            continue
+
+        staged_status = line[0]
+        unstaged_status = line[1]
+        relative_path = line[3:].strip().rsplit(" -> ", 1)[-1]
+        if not relative_path:
+            continue
+
+        kind = _status_to_kind(staged_status, unstaged_status)
+        stats = _merge_file_stats(
+            cached_numstat.get(relative_path),
+            numstat.get(relative_path),
+        )
+        patch_preview, patch_truncated = _build_patch_preview(
+            repo_root=repo_root,
+            relative_path=relative_path,
+            staged_status=staged_status,
+            unstaged_status=unstaged_status,
+            kind=kind,
+        )
+        changed_files.append(
+            {
+                "path": relative_path,
+                "kind": kind,
+                "tracked": kind != "untracked",
+                "staged_status": None if staged_status == " " else staged_status,
+                "unstaged_status": None if unstaged_status == " " else unstaged_status,
+                "insertions": stats.get("insertions"),
+                "deletions": stats.get("deletions"),
+                "patch_preview": patch_preview,
+                "patch_truncated": patch_truncated,
+            }
+        )
+
+    return {
+        "workspace_root": str(WORKSPACE_ROOT),
+        "project_root": str(repo_root),
+        "project_label": repo_name,
+        "repo_root": str(repo_root),
+        "repo_name": repo_name,
+        "origin_url": origin_url,
+        "branch": branch,
+        "head": head,
+        "upstream": upstream,
+        "ahead": ahead,
+        "behind": behind,
+        "is_git_repo": True,
+        "is_dirty": bool(changed_files),
+        "changed_file_count": len(status_lines),
+        "topic_count": len(topics),
+        "changed_files": changed_files,
+    }
+
+
+def load_topics_payload() -> dict[str, Any]:
+    data = _read_json_file(AGNO_TOPICS_PATH, {"topics": []})
+    items = data.get("topics")
+    if not isinstance(items, list):
+        items = []
+
+    normalized_topics: list[dict[str, Any]] = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+
+        name = _trimmed(item.get("name"))
+        if not name:
+            continue
+
+        session_ids: list[str] = []
+        seen_sessions: set[str] = set()
+        for session_id in item.get("session_ids", []):
+            normalized_session = _trimmed(session_id)
+            if normalized_session and normalized_session not in seen_sessions:
+                seen_sessions.add(normalized_session)
+                session_ids.append(normalized_session)
+
+        normalized_topics.append(
+            {
+                "id": _trimmed(item.get("id")) or str(uuid.uuid4()),
+                "name": name,
+                "slug": _trimmed(item.get("slug")) or _slugify(name),
+                "description": _trimmed(item.get("description")),
+                "project_root": _trimmed(item.get("project_root")) or str(WORKSPACE_ROOT),
+                "repo_name": _trimmed(item.get("repo_name")) or WORKSPACE_ROOT.name,
+                "branch": _trimmed(item.get("branch")),
+                "created_at": _trimmed(item.get("created_at"))
+                or datetime.now(timezone.utc).isoformat(),
+                "updated_at": _trimmed(item.get("updated_at"))
+                or _trimmed(item.get("created_at"))
+                or datetime.now(timezone.utc).isoformat(),
+                "session_ids": session_ids,
+            }
+        )
+
+    normalized_topics.sort(key=lambda topic: topic.get("updated_at") or "", reverse=True)
+    return {"topics": normalized_topics}
+
+
+def save_topics_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    return _write_json_file(AGNO_TOPICS_PATH, payload)
+
+
+def list_topics() -> list[dict[str, Any]]:
+    return load_topics_payload()["topics"]
+
+
+def create_topic(name: str, description: str | None = None) -> dict[str, Any]:
+    normalized_name = _trimmed(name)
+    if not normalized_name:
+        raise ValueError("Topic name cannot be empty.")
+
+    context = get_workspace_context()
+    now = datetime.now(timezone.utc).isoformat()
+    topic = {
+        "id": str(uuid.uuid4()),
+        "name": normalized_name,
+        "slug": _slugify(normalized_name),
+        "description": _trimmed(description),
+        "project_root": context.get("project_root") or str(WORKSPACE_ROOT),
+        "repo_name": context.get("repo_name") or WORKSPACE_ROOT.name,
+        "branch": context.get("branch"),
+        "created_at": now,
+        "updated_at": now,
+        "session_ids": [],
+    }
+
+    payload = load_topics_payload()
+    payload["topics"] = [topic, *payload["topics"]]
+    save_topics_payload(payload)
+    return topic
+
+
+def assign_session_to_topic(topic_id: str, session_id: str) -> list[dict[str, Any]]:
+    normalized_topic_id = _trimmed(topic_id)
+    normalized_session_id = _trimmed(session_id)
+    if not normalized_topic_id or not normalized_session_id:
+        raise ValueError("Both topic_id and session_id are required.")
+
+    payload = load_topics_payload()
+    topics = payload["topics"]
+    now = datetime.now(timezone.utc).isoformat()
+    found_topic = False
+
+    for topic in topics:
+        session_ids = [item for item in topic.get("session_ids", []) if item != normalized_session_id]
+        if topic["id"] == normalized_topic_id:
+            found_topic = True
+            session_ids.insert(0, normalized_session_id)
+            topic["updated_at"] = now
+        topic["session_ids"] = session_ids
+
+    if not found_topic:
+        raise ValueError(f"Topic not found: {normalized_topic_id}")
+
+    save_topics_payload({"topics": topics})
+    return list_topics()
+
+
+def detach_session_from_topics(session_id: str) -> list[dict[str, Any]]:
+    normalized_session_id = _trimmed(session_id)
+    if not normalized_session_id:
+        raise ValueError("session_id is required.")
+
+    payload = load_topics_payload()
+    updated = False
+    now = datetime.now(timezone.utc).isoformat()
+
+    for topic in payload["topics"]:
+        session_ids = topic.get("session_ids", [])
+        next_session_ids = [item for item in session_ids if item != normalized_session_id]
+        if len(next_session_ids) != len(session_ids):
+            topic["session_ids"] = next_session_ids
+            topic["updated_at"] = now
+            updated = True
+
+    if updated:
+        save_topics_payload(payload)
+
+    return list_topics()
+
+
 def _probe_ollama(base_url: str) -> tuple[bool, list[str]]:
     service_url = _service_root_from_chat_base(base_url)
     try:
@@ -878,6 +1386,208 @@ def get_provider_statuses() -> list[dict[str, Any]]:
     return providers
 
 
+def get_native_settings_snapshot() -> dict[str, Any]:
+    settings_path = get_openclaude_settings_path()
+    settings = load_openclaude_settings()
+    agent_models = _normalize_agent_models(settings.get("agentModels"))
+    agent_routing = _normalize_agent_routing(settings.get("agentRouting"))
+
+    return {
+        "config_home": str(get_openclaude_config_home_dir()),
+        "settings_path": str(settings_path),
+        "exists": settings_path.exists(),
+        "source": "user-settings",
+        "cowork_mode": settings_path.name == "cowork_settings.json",
+        "agent_models": [
+            {
+                "name": name,
+                "base_url": config["base_url"],
+                "api_key_masked": mask_secret(config.get("api_key")),
+                "api_key_configured": bool(_trimmed(config.get("api_key"))),
+            }
+            for name, config in agent_models.items()
+        ],
+        "agent_routing": [
+            {"key": key, "model": model_name}
+            for key, model_name in agent_routing.items()
+        ],
+        "recommended_routing_keys": list(
+            dict.fromkeys([*STANDARD_AGENT_ROUTING_KEYS, *agent_routing.keys()])
+        ),
+    }
+
+
+def persist_native_settings(config: dict[str, Any]) -> dict[str, Any]:
+    existing_settings = load_openclaude_settings()
+    existing_models = _normalize_agent_models(existing_settings.get("agentModels"))
+    raw_agent_models = config.get("agent_models")
+    raw_agent_routing = config.get("agent_routing")
+
+    next_models: dict[str, dict[str, str]] = {}
+    if isinstance(raw_agent_models, list):
+        for raw_entry in raw_agent_models:
+            if not isinstance(raw_entry, dict):
+                continue
+
+            name = _trimmed(raw_entry.get("name"))
+            base_url = _trimmed(raw_entry.get("base_url"))
+            if not name or not base_url:
+                continue
+
+            incoming_api_key = raw_entry.get("api_key")
+            api_key = incoming_api_key.strip() if isinstance(incoming_api_key, str) else None
+            if api_key:
+                resolved_api_key = api_key
+            else:
+                resolved_api_key = existing_models.get(name, {}).get("api_key", "")
+
+            next_models[name] = {
+                "base_url": base_url,
+                "api_key": resolved_api_key,
+            }
+
+    next_routing: dict[str, str] = {}
+    if isinstance(raw_agent_routing, dict):
+        next_routing = _normalize_agent_routing(raw_agent_routing)
+
+    available_model_names = set(next_models)
+    if not available_model_names:
+        available_model_names = set(existing_models)
+
+    for routing_key, model_name in next_routing.items():
+        if available_model_names and model_name not in available_model_names:
+            raise ValueError(
+                f"Routing target `{routing_key}` points to unknown model `{model_name}`."
+            )
+
+    next_settings = dict(existing_settings)
+    if isinstance(raw_agent_models, list):
+        if next_models:
+            next_settings["agentModels"] = next_models
+        else:
+            next_settings.pop("agentModels", None)
+
+    if isinstance(raw_agent_routing, dict):
+        if next_routing:
+            next_settings["agentRouting"] = next_routing
+        else:
+            next_settings.pop("agentRouting", None)
+
+    save_openclaude_settings(next_settings)
+    return get_native_settings_snapshot()
+
+
+def _infer_runtime_profile_from_agent_model(base_url: str) -> str:
+    normalized_base_url = _trimmed(base_url) or DEFAULT_OPENAI_BASE_URL
+    lowered = normalized_base_url.lower()
+
+    if "generativelanguage.googleapis.com" in lowered:
+        return "gemini"
+    if _looks_like_codex_base_url(normalized_base_url):
+        return "codex"
+    if _is_atomic_chat_base_url(normalized_base_url):
+        return "atomic-chat"
+    if _is_ollama_base_url(normalized_base_url):
+        return "ollama"
+    return "openai"
+
+
+def activate_named_model(model_name: str) -> dict[str, Any]:
+    normalized_name = _trimmed(model_name)
+    if not normalized_name:
+        raise ValueError("model_name is required.")
+
+    settings = load_openclaude_settings()
+    agent_models = _normalize_agent_models(settings.get("agentModels"))
+    target = agent_models.get(normalized_name)
+    if not target:
+        raise ValueError(f"Agent model not found: {normalized_name}")
+
+    profile = _infer_runtime_profile_from_agent_model(target["base_url"])
+    runtime_payload: dict[str, Any] = {
+        "profile": profile,
+        "model": normalized_name,
+        "base_url": target["base_url"],
+        "api_key": target.get("api_key") or None,
+    }
+    if profile == "gemini":
+        runtime_payload["gemini_auth_mode"] = "api-key"
+
+    persist_runtime_profile(runtime_payload)
+    return get_runtime_profile_snapshot()
+
+
+def _fallback_slash_catalog() -> dict[str, Any]:
+    return {
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "commands": [
+            {
+                "id": "help",
+                "name": "help",
+                "slash": "/help",
+                "kind": "command",
+                "source": "builtin",
+                "loaded_from": None,
+                "description": "Show available slash commands.",
+                "aliases": [],
+            },
+            {
+                "id": "skills",
+                "name": "skills",
+                "slash": "/skills",
+                "kind": "command",
+                "source": "builtin",
+                "loaded_from": None,
+                "description": "List available skills.",
+                "aliases": [],
+            },
+            {
+                "id": "plugin",
+                "name": "plugin",
+                "slash": "/plugin",
+                "kind": "command",
+                "source": "builtin",
+                "loaded_from": None,
+                "description": "Manage plugins.",
+                "aliases": ["plugins"],
+            },
+        ],
+        "skills": [],
+        "plugins": [],
+    }
+
+
+def get_slash_catalog() -> dict[str, Any]:
+    if not OPENCLAUDE_WEB_CATALOG_PATH.exists():
+        return _fallback_slash_catalog()
+
+    try:
+        completed = subprocess.run(
+            ["bun", str(OPENCLAUDE_WEB_CATALOG_PATH)],
+            cwd=str(WORKSPACE_ROOT),
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=20,
+        )
+    except Exception:
+        return _fallback_slash_catalog()
+
+    if completed.returncode != 0:
+        return _fallback_slash_catalog()
+
+    try:
+        payload = json.loads(completed.stdout)
+    except json.JSONDecodeError:
+        return _fallback_slash_catalog()
+
+    if not isinstance(payload, dict):
+        return _fallback_slash_catalog()
+
+    return payload
+
+
 def get_integration_snapshot() -> dict[str, Any]:
     tools = list_openclaude_tools()
     runtime = get_runtime_profile_snapshot()
@@ -886,6 +1596,7 @@ def get_integration_snapshot() -> dict[str, Any]:
         "status": workspace_status(),
         "runtime": runtime,
         "router": router,
+        "native_settings": get_native_settings_snapshot(),
         "providers": get_provider_statuses(),
         "tools": {
             "count": len(tools),
@@ -901,6 +1612,8 @@ def workspace_status() -> dict[str, Any]:
     runtime = get_runtime_profile_snapshot()
     router = get_router_snapshot()
     tools = list_openclaude_tools()
+    workspace = get_workspace_context()
+    topics = list_topics()
     return {
         "workspace_root": str(WORKSPACE_ROOT),
         "agno_state_dir": str(AGNO_STATE_DIR),
@@ -912,6 +1625,11 @@ def workspace_status() -> dict[str, Any]:
         "runtime_profile": runtime.get("profile"),
         "router_mode": router.get("mode"),
         "tool_count": len(tools),
+        "repo_name": workspace.get("repo_name"),
+        "branch": workspace.get("branch"),
+        "is_dirty": workspace.get("is_dirty"),
+        "changed_file_count": workspace.get("changed_file_count"),
+        "topic_count": len(topics),
     }
 
 

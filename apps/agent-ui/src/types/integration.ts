@@ -9,6 +9,11 @@ export interface IntegrationStatus {
   runtime_profile: string | null
   router_mode: string | null
   tool_count: number
+  repo_name?: string | null
+  branch?: string | null
+  is_dirty?: boolean
+  changed_file_count?: number
+  topic_count?: number
 }
 
 export interface RuntimeProfileSnapshot {
@@ -61,10 +66,34 @@ export interface PlatformFeature {
   notes: string
 }
 
+export interface AgentModelEntry {
+  name: string
+  base_url: string
+  api_key_masked: string | null
+  api_key_configured: boolean
+}
+
+export interface AgentRoutingEntry {
+  key: string
+  model: string
+}
+
+export interface NativeSettingsSnapshot {
+  config_home: string
+  settings_path: string
+  exists: boolean
+  source: string
+  cowork_mode: boolean
+  agent_models: AgentModelEntry[]
+  agent_routing: AgentRoutingEntry[]
+  recommended_routing_keys: string[]
+}
+
 export interface IntegrationSnapshot {
   status: IntegrationStatus
   runtime: RuntimeProfileSnapshot
   router: RouterSnapshot
+  native_settings: NativeSettingsSnapshot
   providers: ProviderStatus[]
   tools: {
     count: number
@@ -95,4 +124,83 @@ export interface RouterConfigPayload {
 export interface IntegrationConfigPayload {
   runtime: RuntimeConfigPayload
   router: RouterConfigPayload
+  native_settings?: {
+    agent_models: {
+      name: string
+      base_url: string
+      api_key?: string
+    }[]
+    agent_routing: Record<string, string>
+  }
+}
+
+export interface SlashCatalogEntry {
+  id: string
+  name: string
+  slash: string
+  kind: 'command' | 'skill'
+  source: string
+  loaded_from: string | null
+  description: string
+  aliases: string[]
+}
+
+export interface SlashPluginEntry {
+  id: string
+  name: string
+  description: string
+  source: string
+  enabled: boolean
+  builtin: boolean
+}
+
+export interface SlashCatalogSnapshot {
+  generated_at: string
+  commands: SlashCatalogEntry[]
+  skills: SlashCatalogEntry[]
+  plugins: SlashPluginEntry[]
+}
+
+export interface TopicRecord {
+  id: string
+  name: string
+  slug: string
+  description?: string | null
+  project_root: string
+  repo_name: string
+  branch?: string | null
+  created_at: string
+  updated_at: string
+  session_ids: string[]
+}
+
+export interface WorkspaceChangedFile {
+  path: string
+  kind: string
+  tracked: boolean
+  staged_status?: string | null
+  unstaged_status?: string | null
+  insertions?: number | null
+  deletions?: number | null
+  patch_preview?: string | null
+  patch_truncated: boolean
+}
+
+export interface WorkspaceContext {
+  workspace_root: string
+  project_root: string
+  project_label: string
+  repo_root?: string | null
+  repo_name: string
+  origin_url?: string | null
+  branch?: string | null
+  head?: string | null
+  upstream?: string | null
+  ahead: number
+  behind: number
+  is_git_repo: boolean
+  is_dirty: boolean
+  changed_file_count: number
+  topic_count: number
+  changed_files: WorkspaceChangedFile[]
 }

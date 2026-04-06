@@ -24,8 +24,16 @@ from agno_tools import (
     OpenClaudeAgentTools,
     WORKSPACE_ROOT,
     WorkspaceFileTools,
+    activate_named_model,
+    assign_session_to_topic,
+    create_topic,
+    detach_session_from_topics,
     ensure_state_dir,
     get_integration_snapshot,
+    get_slash_catalog,
+    get_workspace_context,
+    list_topics,
+    persist_native_settings,
     persist_router_profile,
     persist_runtime_profile,
     resolve_agno_model,
@@ -73,9 +81,34 @@ class RouterConfigPayload(BaseModel):
     provider_name: str | None = None
 
 
+class AgentModelConfigPayload(BaseModel):
+    name: str
+    base_url: str
+    api_key: str | None = None
+
+
+class NativeSettingsPayload(BaseModel):
+    agent_models: list[AgentModelConfigPayload] = []
+    agent_routing: dict[str, str] = {}
+
+
 class IntegrationConfigPayload(BaseModel):
     runtime: RuntimeConfigPayload
     router: RouterConfigPayload
+    native_settings: NativeSettingsPayload | None = None
+
+
+class ActivateModelPayload(BaseModel):
+    model_name: str
+
+
+class TopicCreatePayload(BaseModel):
+    name: str
+    description: str | None = None
+
+
+class TopicSessionPayload(BaseModel):
+    session_id: str
 
 
 def _refresh_primary_agent_model() -> None:
@@ -86,6 +119,9 @@ def _refresh_primary_agent_model() -> None:
 def update_integration_config(payload: IntegrationConfigPayload) -> dict[str, object]:
     runtime_payload = payload.runtime.model_dump()
     router_payload = payload.router.model_dump()
+    native_settings_payload = (
+        payload.native_settings.model_dump() if payload.native_settings else None
+    )
 
     if router_payload.get("mode") == "explicit":
         if not router_payload.get("model_id") or not router_payload.get("base_url"):
@@ -97,6 +133,8 @@ def update_integration_config(payload: IntegrationConfigPayload) -> dict[str, ob
     try:
         persist_runtime_profile(runtime_payload)
         persist_router_profile(router_payload)
+        if native_settings_payload is not None:
+            persist_native_settings(native_settings_payload)
         _refresh_primary_agent_model()
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -104,6 +142,65 @@ def update_integration_config(payload: IntegrationConfigPayload) -> dict[str, ob
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
     return get_integration_snapshot()
+
+
+@base_app.get("/integration/slash-catalog")
+def integration_slash_catalog() -> dict[str, object]:
+    return get_slash_catalog()
+
+
+@base_app.post("/integration/activate-model")
+def integration_activate_model(payload: ActivateModelPayload) -> dict[str, object]:
+    try:
+        activate_named_model(payload.model_name)
+        _refresh_primary_agent_model()
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+    return get_integration_snapshot()
+
+
+@base_app.get("/integration/workspace")
+def integration_workspace() -> dict[str, object]:
+    return get_workspace_context()
+
+
+@base_app.get("/integration/topics")
+def integration_topics() -> dict[str, object]:
+    return {"items": list_topics()}
+
+
+@base_app.post("/integration/topics")
+def integration_create_topic(payload: TopicCreatePayload) -> dict[str, object]:
+    try:
+        topic = create_topic(payload.name, payload.description)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    return {"item": topic, "items": list_topics()}
+
+
+@base_app.post("/integration/topics/{topic_id}/sessions")
+def integration_assign_session(topic_id: str, payload: TopicSessionPayload) -> dict[str, object]:
+    try:
+        items = assign_session_to_topic(topic_id, payload.session_id)
+    except ValueError as exc:
+        status_code = 404 if "not found" in str(exc).lower() else 400
+        raise HTTPException(status_code=status_code, detail=str(exc)) from exc
+
+    return {"items": items}
+
+
+@base_app.delete("/integration/topic-links/{session_id}")
+def integration_detach_session(session_id: str) -> dict[str, object]:
+    try:
+        items = detach_session_from_topics(session_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    return {"items": items}
 
 
 def build_agent() -> Agent:

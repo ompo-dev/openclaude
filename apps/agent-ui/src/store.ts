@@ -7,6 +7,7 @@ import {
   TeamDetails,
   type ChatMessage
 } from '@/types/os'
+import { TopicRecord, WorkspaceContext } from '@/types/integration'
 
 const DEFAULT_ENDPOINT =
   process.env.NEXT_PUBLIC_AGENT_OS_ENDPOINT || 'http://localhost:7777'
@@ -57,10 +58,24 @@ interface Store {
   ) => void
   isSessionsLoading: boolean
   setIsSessionsLoading: (isSessionsLoading: boolean) => void
-  workspaceView: 'chat' | 'conversations' | 'settings'
+  workspaceView: 'chat' | 'project' | 'conversations' | 'settings'
   setWorkspaceView: (
-    workspaceView: 'chat' | 'conversations' | 'settings'
+    workspaceView: 'chat' | 'project' | 'conversations' | 'settings'
   ) => void
+  workspaceContext: WorkspaceContext | null
+  setWorkspaceContext: (
+    workspaceContext: WorkspaceContext | null
+  ) => void
+  isWorkspaceContextLoading: boolean
+  setIsWorkspaceContextLoading: (isLoading: boolean) => void
+  topics: TopicRecord[]
+  setTopics: (
+    topics: TopicRecord[] | ((prevTopics: TopicRecord[]) => TopicRecord[])
+  ) => void
+  isTopicsLoading: boolean
+  setIsTopicsLoading: (isLoading: boolean) => void
+  selectedTopicId: string | null
+  setSelectedTopicId: (selectedTopicId: string | null) => void
 }
 
 export const useStore = create<Store>()(
@@ -113,14 +128,32 @@ export const useStore = create<Store>()(
       setIsSessionsLoading: (isSessionsLoading) =>
         set(() => ({ isSessionsLoading })),
       workspaceView: 'chat',
-      setWorkspaceView: (workspaceView) => set(() => ({ workspaceView }))
+      setWorkspaceView: (workspaceView) => set(() => ({ workspaceView })),
+      workspaceContext: null,
+      setWorkspaceContext: (workspaceContext) =>
+        set(() => ({ workspaceContext })),
+      isWorkspaceContextLoading: false,
+      setIsWorkspaceContextLoading: (isWorkspaceContextLoading) =>
+        set(() => ({ isWorkspaceContextLoading })),
+      topics: [],
+      setTopics: (topics) =>
+        set((state) => ({
+          topics: typeof topics === 'function' ? topics(state.topics) : topics
+        })),
+      isTopicsLoading: false,
+      setIsTopicsLoading: (isTopicsLoading) =>
+        set(() => ({ isTopicsLoading })),
+      selectedTopicId: null,
+      setSelectedTopicId: (selectedTopicId) =>
+        set(() => ({ selectedTopicId }))
     }),
     {
       name: 'endpoint-storage',
       storage: createJSONStorage(() => localStorage),
       partialize: (state) => ({
         selectedEndpoint: state.selectedEndpoint,
-        workspaceView: state.workspaceView
+        workspaceView: state.workspaceView,
+        selectedTopicId: state.selectedTopicId
       }),
       onRehydrateStorage: () => (state) => {
         state?.setHydrated?.()

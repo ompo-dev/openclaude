@@ -1,11 +1,22 @@
 'use client'
+import {
+  activateNamedModelAPI,
+  getIntegrationConfigAPI
+} from '@/api/integration'
 import { Button } from '@/components/ui/button'
 import { ModeSelector } from '@/components/chat/Sidebar/ModeSelector'
 import { EntitySelector } from '@/components/chat/Sidebar/EntitySelector'
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue
+} from '@/components/ui/select'
 import useChatActions from '@/hooks/useChatActions'
 import { useStore } from '@/store'
 import { motion, AnimatePresence } from 'framer-motion'
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import Icon from '@/components/ui/icon'
 import { getProviderIcon } from '@/lib/modelProvider'
 import Sessions from './Sessions'
@@ -16,6 +27,8 @@ import { useQueryState } from 'nuqs'
 import { truncateText } from '@/lib/utils'
 import { Skeleton } from '@/components/ui/skeleton'
 import WorkspaceViewSelector from './WorkspaceViewSelector'
+import { cn } from '@/lib/utils'
+import { IntegrationSnapshot } from '@/types/integration'
 
 const ENDPOINT_PLACEHOLDER = 'NO ENDPOINT ADDED'
 const SidebarHeader = () => (
@@ -52,6 +65,166 @@ const ModelDisplay = ({ model }: { model: string }) => (
       return icon ? <Icon type={icon} className="shrink-0" size="xs" /> : null
     })()}
     {model}
+  </div>
+)
+
+const QuickModelSelector = ({
+  snapshot,
+  selectedModel,
+  disabled,
+  isSwitching,
+  onChange
+}: {
+  snapshot: IntegrationSnapshot
+  selectedModel: string
+  disabled: boolean
+  isSwitching: boolean
+  onChange: (value: string) => void
+}) => {
+  const options = Array.from(
+    new Map(
+      [
+        {
+          value: snapshot.runtime.model,
+          label: snapshot.runtime.model,
+          caption: snapshot.runtime.label
+        },
+        ...snapshot.native_settings.agent_models.map((entry) => ({
+          value: entry.name,
+          label: entry.name,
+          caption: entry.base_url
+        }))
+      ].map((entry) => [entry.value, entry])
+    ).values()
+  )
+
+  const currentValue =
+    options.find((option) => option.value === selectedModel)?.value ||
+    snapshot.runtime.model
+
+  return (
+    <div className="flex flex-col gap-2">
+      <div className="text-xs font-medium uppercase text-primary">Model</div>
+      <Select
+        value={currentValue}
+        onValueChange={onChange}
+        disabled={disabled || isSwitching}
+      >
+        <SelectTrigger className="h-9 w-full rounded-xl bg-accent text-xs font-medium uppercase">
+          <SelectValue />
+        </SelectTrigger>
+        <SelectContent>
+          {options.map((option) => (
+            <SelectItem key={option.value} value={option.value}>
+              <div className="flex flex-col gap-1">
+                <span className="text-xs font-medium uppercase">
+                  {option.label}
+                </span>
+                <span className="text-[10px] uppercase text-muted">
+                  {option.caption}
+                </span>
+              </div>
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+      <div className="text-[11px] uppercase text-muted">
+        {isSwitching ? 'Applying runtime switch...' : snapshot.native_settings.settings_path}
+      </div>
+    </div>
+  )
+}
+
+const ProjectStatusCard = ({
+  repoName,
+  branch,
+  isDirty,
+  changedFileCount
+}: {
+  repoName: string
+  branch?: string | null
+  isDirty: boolean
+  changedFileCount: number
+}) => (
+  <div className="rounded-xl border border-primary/15 bg-accent p-3">
+    <div className="mb-2 flex items-center justify-between gap-3">
+      <div className="text-xs font-medium uppercase text-primary">Project</div>
+      <div
+        className={`h-2 w-2 rounded-full ${isDirty ? 'bg-destructive' : 'bg-positive'}`}
+      />
+    </div>
+    <div className="text-sm font-medium text-secondary">
+      {truncateText(repoName, 26)}
+    </div>
+    <div className="mt-1 text-[11px] uppercase text-muted">
+      {branch || 'No branch detected'}
+    </div>
+    <div className="mt-3 text-[11px] uppercase text-muted">
+      {changedFileCount} changed file{changedFileCount === 1 ? '' : 's'}
+    </div>
+  </div>
+)
+
+const TopicsCard = ({
+  topics,
+  selectedTopicId,
+  setSelectedTopicId
+}: {
+  topics: {
+    id: string
+    name: string
+    branch?: string | null
+    session_ids: string[]
+  }[]
+  selectedTopicId: string | null
+  setSelectedTopicId: (topicId: string | null) => void
+}) => (
+  <div className="flex flex-col gap-2">
+    <div className="flex items-center justify-between gap-3">
+      <div className="text-xs font-medium uppercase text-primary">Topic</div>
+      <Button
+        variant="ghost"
+        size="sm"
+        className="h-7 rounded-lg px-2 text-[11px] uppercase text-muted"
+        onClick={() =>
+          setSelectedTopicId(selectedTopicId ? null : topics[0]?.id ?? null)
+        }
+      >
+        {selectedTopicId ? 'Clear' : 'Focus'}
+      </Button>
+    </div>
+    {topics.length > 0 ? (
+      <div className="flex flex-col gap-1.5">
+        {topics.slice(0, 4).map((topic) => {
+          const active = selectedTopicId === topic.id
+          return (
+            <button
+              key={topic.id}
+              type="button"
+              onClick={() => setSelectedTopicId(active ? null : topic.id)}
+              className={cn(
+                'rounded-xl border px-3 py-2 text-left transition-colors',
+                active
+                  ? 'border-primary/20 bg-primary/10'
+                  : 'border-primary/10 bg-accent hover:bg-accent/80'
+              )}
+            >
+              <div className="text-sm font-medium text-secondary">
+                {truncateText(topic.name, 24)}
+              </div>
+              <div className="mt-1 text-[11px] uppercase text-muted">
+                {topic.branch || 'Workspace topic'} • {topic.session_ids.length} session
+                {topic.session_ids.length === 1 ? '' : 's'}
+              </div>
+            </button>
+          )
+        })}
+      </div>
+    ) : (
+      <div className="rounded-xl border border-dashed border-primary/10 px-3 py-4 text-xs text-muted">
+        Create a topic in Conversations to group project chats.
+      </div>
+    )}
   </div>
 )
 
@@ -216,21 +389,76 @@ const Sidebar = ({
   const {
     messages,
     selectedEndpoint,
+    authToken,
     isEndpointActive,
     selectedModel,
     hydrated,
     isEndpointLoading,
-    mode
+    mode,
+    workspaceContext,
+    topics,
+    selectedTopicId,
+    setSelectedTopicId
   } = useStore()
   const [isMounted, setIsMounted] = useState(false)
+  const [configSnapshot, setConfigSnapshot] = useState<IntegrationSnapshot | null>(
+    null
+  )
+  const [isConfigLoading, setIsConfigLoading] = useState(false)
+  const [isModelSwitching, setIsModelSwitching] = useState(false)
   const [agentId] = useQueryState('agent')
   const [teamId] = useQueryState('team')
+
+  const refreshConfigSnapshot = useCallback(async () => {
+    setIsConfigLoading(true)
+    try {
+      const nextSnapshot = await getIntegrationConfigAPI(selectedEndpoint, authToken)
+      setConfigSnapshot(nextSnapshot)
+    } catch {
+      setConfigSnapshot(null)
+    } finally {
+      setIsConfigLoading(false)
+    }
+  }, [selectedEndpoint, authToken])
 
   useEffect(() => {
     setIsMounted(true)
 
-    if (hydrated) initialize()
-  }, [selectedEndpoint, initialize, hydrated, mode])
+    if (!hydrated) return
+
+    void (async () => {
+      await initialize()
+      if (useStore.getState().isEndpointActive) {
+        await refreshConfigSnapshot()
+      } else {
+        setConfigSnapshot(null)
+      }
+    })()
+  }, [selectedEndpoint, initialize, hydrated, mode, authToken, refreshConfigSnapshot])
+
+  const handleQuickModelChange = async (value: string) => {
+    if (!agentId || !configSnapshot || value === configSnapshot.runtime.model) {
+      return
+    }
+
+    setIsModelSwitching(true)
+    try {
+      const nextSnapshot = await activateNamedModelAPI(
+        selectedEndpoint,
+        value,
+        authToken
+      )
+      setConfigSnapshot(nextSnapshot)
+      await initialize()
+      toast.success(`Runtime switched to ${value}`)
+    } catch (error) {
+      toast.error(
+        error instanceof Error ? error.message : 'Failed to switch model'
+      )
+    } finally {
+      setIsModelSwitching(false)
+    }
+  }
 
   const handleNewChat = () => {
     clearChat()
@@ -275,6 +503,19 @@ const Sidebar = ({
           <>
             <WorkspaceViewSelector />
             <Endpoint />
+            {workspaceContext ? (
+              <ProjectStatusCard
+                repoName={workspaceContext.repo_name}
+                branch={workspaceContext.branch}
+                isDirty={workspaceContext.is_dirty}
+                changedFileCount={workspaceContext.changed_file_count}
+              />
+            ) : null}
+            <TopicsCard
+              topics={topics}
+              selectedTopicId={selectedTopicId}
+              setSelectedTopicId={setSelectedTopicId}
+            />
             <AuthToken hasEnvToken={hasEnvToken} envToken={envToken} />
             {isEndpointActive && (
               <>
@@ -300,7 +541,16 @@ const Sidebar = ({
                     <>
                       <ModeSelector />
                       <EntitySelector />
-                      {selectedModel && (agentId || teamId) && (
+                      {agentId && configSnapshot ? (
+                        <QuickModelSelector
+                          snapshot={configSnapshot}
+                          selectedModel={selectedModel}
+                          disabled={isConfigLoading}
+                          isSwitching={isModelSwitching}
+                          onChange={handleQuickModelChange}
+                        />
+                      ) : null}
+                      {teamId && selectedModel && (
                         <ModelDisplay model={selectedModel} />
                       )}
                     </>

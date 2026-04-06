@@ -4,6 +4,7 @@ import ChatInput from './ChatInput'
 import MessageArea from './MessageArea'
 import { useStore } from '@/store'
 import ConversationsView from '@/components/workspace/ConversationsView'
+import ProjectView from '@/components/workspace/ProjectView'
 import SettingsView from '@/components/workspace/SettingsView'
 
 const ChatArea = () => {
@@ -21,6 +22,14 @@ const ChatArea = () => {
     return (
       <main className="relative m-1.5 flex flex-grow flex-col rounded-xl bg-background">
         <SettingsView />
+      </main>
+    )
+  }
+
+  if (workspaceView === 'project') {
+    return (
+      <main className="relative m-1.5 flex flex-grow flex-col rounded-xl bg-background">
+        <ProjectView />
       </main>
     )
   }

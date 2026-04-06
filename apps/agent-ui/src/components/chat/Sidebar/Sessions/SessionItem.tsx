@@ -10,6 +10,7 @@ import { useState } from 'react'
 import DeleteSessionModal from './DeleteSessionModal'
 import useChatActions from '@/hooks/useChatActions'
 import { truncateText, cn } from '@/lib/utils'
+import useWorkspaceData from '@/hooks/useWorkspaceData'
 
 type SessionItemProps = SessionEntry & {
   isSelected: boolean
@@ -33,6 +34,7 @@ const SessionItem = ({
   const [isDeleteModalOpen, setIsDeleteModalOpen] = useState(false)
   const [isDeleting, setIsDeleting] = useState(false)
   const { clearChat } = useChatActions()
+  const { detachSessionFromTopics } = useWorkspaceData()
 
   const handleGetSession = async () => {
     if (!(agentId || teamId || dbId)) return
@@ -63,6 +65,11 @@ const SessionItem = ({
 
       if (response?.ok && sessionsData) {
         setSessionsData(sessionsData.filter((s) => s.session_id !== session_id))
+        try {
+          await detachSessionFromTopics(session_id)
+        } catch {
+          // The session was already removed from AgentOS; topic cleanup is best-effort.
+        }
         // If the deleted session was the active one, clear the chat
         if (currentSessionId === session_id) {
           setSessionId(null)

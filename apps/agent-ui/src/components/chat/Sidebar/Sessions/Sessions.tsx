@@ -48,7 +48,9 @@ const Sessions = () => {
     hydrated,
     sessionsData,
     setSessionsData,
-    isSessionsLoading
+    isSessionsLoading,
+    topics,
+    selectedTopicId
   } = useStore()
 
   const [isScrolling, setIsScrolling] = useState(false)
@@ -121,6 +123,21 @@ const Sessions = () => {
     []
   )
 
+  const visibleSessions = useMemo(() => {
+    const allSessions = sessionsData ?? []
+    if (!selectedTopicId) {
+      return allSessions
+    }
+
+    const activeTopic = topics.find((topic) => topic.id === selectedTopicId)
+    if (!activeTopic) {
+      return allSessions
+    }
+
+    const sessionIds = new Set(activeTopic.session_ids)
+    return allSessions.filter((entry) => sessionIds.has(entry.session_id))
+  }, [selectedTopicId, sessionsData, topics])
+
   if (isSessionsLoading || isEndpointLoading) {
     return (
       <div className="w-full">
@@ -146,12 +163,11 @@ const Sessions = () => {
         onMouseLeave={handleScroll}
       >
         {!isEndpointActive ||
-        (!isSessionsLoading &&
-          (!sessionsData || sessionsData?.length === 0)) ? (
+        (!isSessionsLoading && visibleSessions.length === 0) ? (
           <SessionBlankState />
         ) : (
           <div className="flex flex-col gap-y-1 pr-1">
-            {sessionsData?.map((entry, idx) => (
+            {visibleSessions.map((entry, idx) => (
               <SessionItem
                 key={`${entry?.session_id}-${idx}`}
                 currentSessionId={selectedSessionId}
