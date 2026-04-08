@@ -1,3 +1,5 @@
+import { WorkspaceContext } from '@/types/integration'
+
 export interface ToolCall {
   role: 'user' | 'tool' | 'system' | 'assistant'
   content: string | null
@@ -209,6 +211,7 @@ export interface ChatMessage {
   videos?: VideoData[]
   audio?: AudioData[]
   response_audio?: ResponseAudio
+  workspace_snapshot?: WorkspaceContext | null
 }
 
 export interface AgentDetails {

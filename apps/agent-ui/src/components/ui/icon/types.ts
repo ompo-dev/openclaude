@@ -36,6 +36,10 @@ export type IconType =
   | 'plus-icon'
   | 'references'
   | 'trash'
+  | 'folder'
+  | 'folder-open'
+  | 'settings'
+  | 'more-horizontal'
 
 export interface IconProps {
   type: IconType

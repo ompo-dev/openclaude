@@ -35,7 +35,11 @@ import {
   Check,
   ChevronDown,
   ChevronUp,
-  Trash
+  Trash,
+  Folder,
+  FolderOpen,
+  Settings2,
+  MoreHorizontal
 } from 'lucide-react'
 
 import { PlusIcon } from '@radix-ui/react-icons'
@@ -75,5 +79,9 @@ export const ICONS: IconTypeMap = {
   'chevron-up': ChevronUp,
   'plus-icon': PlusIcon,
   references: ReferencesIcon,
-  trash: Trash
+  trash: Trash,
+  folder: Folder,
+  'folder-open': FolderOpen,
+  settings: Settings2,
+  'more-horizontal': MoreHorizontal
 }

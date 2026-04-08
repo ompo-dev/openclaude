@@ -7,7 +7,11 @@ import {
   TeamDetails,
   type ChatMessage
 } from '@/types/os'
-import { TopicRecord, WorkspaceContext } from '@/types/integration'
+import {
+  TopicRecord,
+  WorkspaceBranch,
+  WorkspaceContext
+} from '@/types/integration'
 
 const DEFAULT_ENDPOINT =
   process.env.NEXT_PUBLIC_AGENT_OS_ENDPOINT || 'http://localhost:7777'
@@ -38,6 +42,10 @@ interface Store {
     messages: ChatMessage[] | ((prevMessages: ChatMessage[]) => ChatMessage[])
   ) => void
   chatInputRef: React.RefObject<HTMLTextAreaElement | null>
+  chatInputSeed: string | null
+  chatInputSeedNonce: number
+  primeChatInput: (value: string) => void
+  clearChatInputSeed: () => void
   selectedEndpoint: string
   setSelectedEndpoint: (selectedEndpoint: string) => void
   authToken: string
@@ -76,6 +84,14 @@ interface Store {
   setIsTopicsLoading: (isLoading: boolean) => void
   selectedTopicId: string | null
   setSelectedTopicId: (selectedTopicId: string | null) => void
+  branches: WorkspaceBranch[]
+  setBranches: (
+    branches:
+      | WorkspaceBranch[]
+      | ((prevBranches: WorkspaceBranch[]) => WorkspaceBranch[])
+  ) => void
+  isBranchesLoading: boolean
+  setIsBranchesLoading: (isLoading: boolean) => void
 }
 
 export const useStore = create<Store>()(
@@ -103,6 +119,17 @@ export const useStore = create<Store>()(
             typeof messages === 'function' ? messages(state.messages) : messages
         })),
       chatInputRef: { current: null },
+      chatInputSeed: null,
+      chatInputSeedNonce: 0,
+      primeChatInput: (value) =>
+        set(() => ({
+          chatInputSeed: value,
+          chatInputSeedNonce: Date.now()
+        })),
+      clearChatInputSeed: () =>
+        set(() => ({
+          chatInputSeed: null
+        })),
       selectedEndpoint: DEFAULT_ENDPOINT,
       setSelectedEndpoint: (selectedEndpoint) =>
         set(() => ({ selectedEndpoint })),
@@ -145,7 +172,16 @@ export const useStore = create<Store>()(
         set(() => ({ isTopicsLoading })),
       selectedTopicId: null,
       setSelectedTopicId: (selectedTopicId) =>
-        set(() => ({ selectedTopicId }))
+        set(() => ({ selectedTopicId })),
+      branches: [],
+      setBranches: (branches) =>
+        set((state) => ({
+          branches:
+            typeof branches === 'function' ? branches(state.branches) : branches
+        })),
+      isBranchesLoading: false,
+      setIsBranchesLoading: (isBranchesLoading) =>
+        set(() => ({ isBranchesLoading }))
     }),
     {
       name: 'endpoint-storage',

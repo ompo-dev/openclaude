@@ -10,6 +10,7 @@ from agno.os import AgentOS
 from agno.tools.duckduckgo import DuckDuckGoTools
 from agno.tools.shell import ShellTools
 from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 CURRENT_DIR = Path(__file__).resolve().parent
@@ -26,17 +27,33 @@ from agno_tools import (
     WorkspaceFileTools,
     activate_named_model,
     assign_session_to_topic,
+    browse_workspace_folder,
+    create_git_branch,
+    commit_git_changes,
+    complete_terminal_command,
     create_topic,
     detach_session_from_topics,
     ensure_state_dir,
+    get_git_overview,
     get_integration_snapshot,
+    get_open_with_targets,
     get_slash_catalog,
+    get_terminal_snapshot,
+    get_workspace_bootstrap,
     get_workspace_context,
+    launch_open_with_target,
     list_topics,
+    list_git_branches,
     persist_native_settings,
     persist_router_profile,
     persist_runtime_profile,
+    resize_terminal,
+    resolve_workspace_topic,
     resolve_agno_model,
+    run_terminal_command,
+    send_terminal_input,
+    set_project_workspace_root,
+    switch_git_branch,
     workspace_status,
 )
 
@@ -47,6 +64,20 @@ base_app = FastAPI(
     docs_url="/integration/docs",
     redoc_url=None,
 )
+
+
+def _configure_cors(target_app: FastAPI) -> None:
+    target_app.add_middleware(
+        CORSMiddleware,
+        allow_origins=DEFAULT_AGENTOS_CORS,
+        allow_origin_regex=r"^https?://(localhost|127\.0\.0\.1)(:\d+)?$",
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+
+
+_configure_cors(base_app)
 
 
 @base_app.get("/healthz")
@@ -111,6 +142,53 @@ class TopicSessionPayload(BaseModel):
     session_id: str
 
 
+class WorkspaceTargetPayload(BaseModel):
+    path: str
+    create_topic: bool = True
+
+
+class BranchSwitchPayload(BaseModel):
+    branch_name: str
+
+
+class BranchCreatePayload(BaseModel):
+    branch_name: str
+    start_point: str | None = None
+    switch: bool = True
+
+
+class TerminalRunPayload(BaseModel):
+    command: str
+
+
+class TerminalCompletePayload(BaseModel):
+    command: str
+
+
+class TerminalInputPayload(BaseModel):
+    data: str
+
+
+class TerminalResizePayload(BaseModel):
+    cols: int
+    rows: int
+
+
+class OpenWithPayload(BaseModel):
+    target_id: str
+
+
+class FolderPickerPayload(BaseModel):
+    title: str | None = None
+
+
+class GitCommitPayload(BaseModel):
+    message: str | None = None
+    include_untracked: bool = True
+    action: str = "commit"
+    draft: bool = False
+
+
 def _refresh_primary_agent_model() -> None:
     primary_agent.model = resolve_agno_model()
 
@@ -165,6 +243,128 @@ def integration_activate_model(payload: ActivateModelPayload) -> dict[str, objec
 @base_app.get("/integration/workspace")
 def integration_workspace() -> dict[str, object]:
     return get_workspace_context()
+
+
+@base_app.get("/integration/workspace-bootstrap")
+def integration_workspace_bootstrap() -> dict[str, object]:
+    return get_workspace_bootstrap()
+
+
+@base_app.post("/integration/workspace-target")
+def integration_workspace_target(payload: WorkspaceTargetPayload) -> dict[str, object]:
+    try:
+        set_project_workspace_root(payload.path)
+        topic = resolve_workspace_topic(create_if_missing=payload.create_topic)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    return {
+        "workspace": get_workspace_context(),
+        "topic": topic,
+        "branches": list_git_branches(),
+        "topics": list_topics(),
+    }
+
+
+@base_app.get("/integration/branches")
+def integration_branches() -> dict[str, object]:
+    return list_git_branches()
+
+
+@base_app.post("/integration/branches/switch")
+def integration_switch_branch(payload: BranchSwitchPayload) -> dict[str, object]:
+    try:
+        return switch_git_branch(payload.branch_name)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@base_app.post("/integration/branches/create")
+def integration_create_branch(payload: BranchCreatePayload) -> dict[str, object]:
+    try:
+        return create_git_branch(
+            payload.branch_name,
+            start_point=payload.start_point,
+            switch=payload.switch,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@base_app.get("/integration/git/overview")
+def integration_git_overview() -> dict[str, object]:
+    return get_git_overview()
+
+
+@base_app.post("/integration/git/commit")
+def integration_git_commit(payload: GitCommitPayload) -> dict[str, object]:
+    try:
+        return commit_git_changes(
+            payload.message,
+            include_untracked=payload.include_untracked,
+            action=payload.action,
+            draft=payload.draft,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@base_app.get("/integration/open-with")
+def integration_open_with() -> dict[str, object]:
+    return get_open_with_targets()
+
+
+@base_app.post("/integration/open-with")
+def integration_open_with_launch(payload: OpenWithPayload) -> dict[str, object]:
+    try:
+        return launch_open_with_target(payload.target_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@base_app.post("/integration/folder-picker")
+def integration_folder_picker(payload: FolderPickerPayload) -> dict[str, object]:
+    try:
+        return browse_workspace_folder(payload.title)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@base_app.get("/integration/terminal")
+def integration_terminal() -> dict[str, object]:
+    return get_terminal_snapshot()
+
+
+@base_app.post("/integration/terminal/run")
+def integration_terminal_run(payload: TerminalRunPayload) -> dict[str, object]:
+    try:
+        return run_terminal_command(payload.command)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@base_app.post("/integration/terminal/input")
+def integration_terminal_input(payload: TerminalInputPayload) -> dict[str, object]:
+    try:
+        return send_terminal_input(payload.data)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@base_app.post("/integration/terminal/resize")
+def integration_terminal_resize(payload: TerminalResizePayload) -> dict[str, object]:
+    try:
+        return resize_terminal(payload.cols, payload.rows)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@base_app.post("/integration/terminal/complete")
+def integration_terminal_complete(payload: TerminalCompletePayload) -> dict[str, object]:
+    try:
+        return complete_terminal_command(payload.command)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @base_app.get("/integration/topics")
@@ -261,6 +461,7 @@ agent_os = AgentOS(
 )
 
 app = agent_os.get_app()
+_configure_cors(app)
 
 
 if __name__ == "__main__":

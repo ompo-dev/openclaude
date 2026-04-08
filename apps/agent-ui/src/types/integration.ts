@@ -165,6 +165,7 @@ export interface TopicRecord {
   id: string
   name: string
   slug: string
+  kind?: string | null
   description?: string | null
   project_root: string
   repo_name: string
@@ -201,6 +202,121 @@ export interface WorkspaceContext {
   is_git_repo: boolean
   is_dirty: boolean
   changed_file_count: number
+  total_insertions?: number
+  total_deletions?: number
+  staged_file_count?: number
+  unstaged_file_count?: number
+  untracked_file_count?: number
   topic_count: number
   changed_files: WorkspaceChangedFile[]
+}
+
+export interface WorkspaceBranch {
+  name: string
+  short_name: string
+  kind: 'local' | 'remote'
+  current: boolean
+}
+
+export interface BranchListResponse {
+  items: WorkspaceBranch[]
+  current_branch: string | null
+  project_root: string
+  repo_name?: string | null
+}
+
+export interface WorkspaceBootstrapResponse {
+  workspace: WorkspaceContext
+  topic: TopicRecord | null
+  topics: TopicRecord[]
+  branches: BranchListResponse
+}
+
+export interface GitOverview {
+  workspace: WorkspaceContext
+  summary: {
+    changed_file_count: number
+    total_insertions: number
+    total_deletions: number
+    staged_file_count: number
+    unstaged_file_count: number
+    untracked_file_count: number
+  }
+  actions: {
+    can_commit: boolean
+    can_push: boolean
+    can_create_pr: boolean
+    gh_available: boolean
+  }
+}
+
+export interface GitCommitResult extends WorkspaceBootstrapResponse {
+  commit_message: string
+  push?: {
+    branch?: string | null
+    upstream?: string | null
+  } | null
+  pull_request?: {
+    url?: string | null
+    draft: boolean
+    base?: string | null
+  } | null
+  git: GitOverview
+}
+
+export interface OpenWithTarget {
+  id: string
+  label: string
+  description: string
+  installed: boolean
+  preferred: boolean
+}
+
+export interface OpenWithTargetsResponse {
+  items: OpenWithTarget[]
+}
+
+export interface OpenWithLaunchResponse {
+  target: string
+  label: string
+  workspace: string
+}
+
+export interface FolderPickerResponse {
+  path: string | null
+  cancelled: boolean
+}
+
+export interface TerminalEntry {
+  id: string
+  kind: 'command' | 'output'
+  text: string
+  created_at: string
+  exit_code?: number
+  success?: boolean
+  raw?: boolean
+}
+
+export interface TerminalSnapshot {
+  cwd: string
+  shell: string
+  entries: TerminalEntry[]
+  last_exit_code?: number
+  success?: boolean
+  interactive: boolean
+  active_command?: string | null
+}
+
+export interface TerminalCompletionSnapshot {
+  cwd: string
+  replacement_index: number
+  replacement_length: number
+  matches: string[]
+}
+
+export interface GitCommitPayload {
+  message?: string
+  include_untracked?: boolean
+  action?: 'commit' | 'commit_and_push' | 'commit_and_create_pr'
+  draft?: boolean
 }

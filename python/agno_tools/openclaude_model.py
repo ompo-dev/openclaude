@@ -58,6 +58,29 @@ def _extract_text_from_assistant_payload(payload: dict[str, Any]) -> str | None:
     return None
 
 
+def _compact_provider_payload(payload: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not isinstance(payload, dict):
+        return None
+
+    compact: dict[str, Any] = {}
+    for key in ("type", "subtype", "session_id", "stop_reason", "is_error", "uuid"):
+        value = payload.get(key)
+        if value is not None:
+            compact[key] = value
+
+    error = payload.get("error")
+    if isinstance(error, dict):
+        error_message = _trimmed(error.get("message"))
+        if error_message:
+            compact["error"] = {"message": error_message}
+
+    result_text = _trimmed(payload.get("result"))
+    if result_text:
+        compact["result_preview"] = result_text[:240]
+
+    return compact or None
+
+
 @dataclass
 class OpenClaudeModel(Model):
     workspace_root: Path = field(default_factory=Path.cwd)
@@ -335,7 +358,7 @@ class OpenClaudeModel(Model):
         return ModelResponse(
             role="assistant",
             content=result_text,
-            provider_data=payload,
+            provider_data=_compact_provider_payload(payload),
             updated_session_state=session_state,
         )
 
@@ -370,80 +393,16 @@ class OpenClaudeModel(Model):
         run_response: RunOutput | TeamRunOutput | None = None,
         compress_tool_results: bool = False,
     ) -> Iterator[ModelResponse]:
-        del assistant_message, response_format, tools, tool_choice, compress_tool_results
-
-        self._ensure_openclaude_built()
-        session_state, session_id, initialized = self._resolve_openclaude_session(run_response)
-        prompt = self._extract_prompt(messages, initialized)
-        args = self._build_args(prompt, session_id, initialized, stream=True)
-
-        process = subprocess.Popen(
-            args,
-            cwd=self.workspace_root,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            encoding="utf-8",
-            env=self._build_env(),
-            bufsize=1,
+        response = self.invoke(
+            messages,
+            assistant_message,
+            response_format=response_format,
+            tools=tools,
+            tool_choice=tool_choice,
+            run_response=run_response,
+            compress_tool_results=compress_tool_results,
         )
-
-        collected_stdout: list[str] = []
-        saw_delta = False
-        fallback_text: str | None = None
-        provider_data: dict[str, Any] | None = None
-
-        assert process.stdout is not None
-        for raw_line in process.stdout:
-            collected_stdout.append(raw_line)
-            payload = _parse_json_line(raw_line)
-            if payload is None:
-                continue
-
-            delta_text, final_text, payload_data = self._handle_stream_payload(payload)
-            if payload_data is not None:
-                provider_data = payload_data
-            if final_text:
-                fallback_text = final_text
-            if delta_text is None:
-                continue
-
-            saw_delta = True
-            yield ModelResponse(role="assistant", content=delta_text, provider_data=provider_data)
-
-        stderr_text = ""
-        if process.stderr is not None:
-            stderr_text = process.stderr.read()
-
-        returncode = process.wait(timeout=self.timeout_seconds)
-        stdout_text = "".join(collected_stdout)
-        if returncode != 0:
-            self._raise_subprocess_error(
-                args=args,
-                stdout_text=stdout_text,
-                stderr_text=stderr_text,
-                returncode=returncode,
-            )
-
-        session_state["openclaude_model_session_id"] = (
-            _trimmed((provider_data or {}).get("session_id")) or session_id
-        )
-        session_state["openclaude_model_initialized"] = True
-
-        if not saw_delta and fallback_text:
-            yield ModelResponse(
-                role="assistant",
-                content=fallback_text,
-                provider_data=provider_data,
-                updated_session_state=session_state,
-            )
-        else:
-            yield ModelResponse(
-                role="assistant",
-                content=None,
-                provider_data=provider_data,
-                updated_session_state=session_state,
-            )
+        yield response
 
     async def ainvoke_stream(
         self,
@@ -455,82 +414,16 @@ class OpenClaudeModel(Model):
         run_response: RunOutput | TeamRunOutput | None = None,
         compress_tool_results: bool = False,
     ) -> AsyncIterator[ModelResponse]:
-        del assistant_message, response_format, tools, tool_choice, compress_tool_results
-
-        self._ensure_openclaude_built()
-        session_state, session_id, initialized = self._resolve_openclaude_session(run_response)
-        prompt = self._extract_prompt(messages, initialized)
-        args = self._build_args(prompt, session_id, initialized, stream=True)
-
-        process = await asyncio.create_subprocess_exec(
-            *args,
-            cwd=str(self.workspace_root),
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            env=self._build_env(),
+        response = await self.ainvoke(
+            messages,
+            assistant_message,
+            response_format=response_format,
+            tools=tools,
+            tool_choice=tool_choice,
+            run_response=run_response,
+            compress_tool_results=compress_tool_results,
         )
-
-        collected_stdout: list[str] = []
-        saw_delta = False
-        fallback_text: str | None = None
-        provider_data: dict[str, Any] | None = None
-
-        assert process.stdout is not None
-        while True:
-            raw_line = await process.stdout.readline()
-            if not raw_line:
-                break
-
-            line = raw_line.decode("utf-8")
-            collected_stdout.append(line)
-            payload = _parse_json_line(line)
-            if payload is None:
-                continue
-
-            delta_text, final_text, payload_data = self._handle_stream_payload(payload)
-            if payload_data is not None:
-                provider_data = payload_data
-            if final_text:
-                fallback_text = final_text
-            if delta_text is None:
-                continue
-
-            saw_delta = True
-            yield ModelResponse(role="assistant", content=delta_text, provider_data=provider_data)
-
-        stderr_text = ""
-        if process.stderr is not None:
-            stderr_text = (await process.stderr.read()).decode("utf-8")
-
-        returncode = await asyncio.wait_for(process.wait(), timeout=self.timeout_seconds)
-        stdout_text = "".join(collected_stdout)
-        if returncode != 0:
-            self._raise_subprocess_error(
-                args=args,
-                stdout_text=stdout_text,
-                stderr_text=stderr_text,
-                returncode=returncode,
-            )
-
-        session_state["openclaude_model_session_id"] = (
-            _trimmed((provider_data or {}).get("session_id")) or session_id
-        )
-        session_state["openclaude_model_initialized"] = True
-
-        if not saw_delta and fallback_text:
-            yield ModelResponse(
-                role="assistant",
-                content=fallback_text,
-                provider_data=provider_data,
-                updated_session_state=session_state,
-            )
-        else:
-            yield ModelResponse(
-                role="assistant",
-                content=None,
-                provider_data=provider_data,
-                updated_session_state=session_state,
-            )
+        yield response
 
     def _parse_provider_response(self, response: Any, **kwargs) -> ModelResponse:
         del kwargs

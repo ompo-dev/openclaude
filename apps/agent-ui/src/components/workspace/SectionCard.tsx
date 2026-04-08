@@ -22,15 +22,15 @@ const SectionCard = ({
   return (
     <section
       className={cn(
-        'rounded-2xl border border-primary/10 bg-accent/60 p-5',
+        'rounded-xl border border-[#30363d] bg-[#161b22] p-5 shadow-none',
         className
       )}
     >
       <div className="mb-4 flex items-start justify-between gap-4">
         <div className="space-y-1">
-          <h2 className="text-sm font-medium uppercase text-primary">{title}</h2>
+          <h2 className="text-sm font-semibold uppercase tracking-[0.12em] text-[#58a6ff]">{title}</h2>
           {description ? (
-            <p className="max-w-2xl text-sm text-muted">{description}</p>
+            <p className="max-w-2xl text-sm text-[#7d8590]">{description}</p>
           ) : null}
         </div>
         {action}

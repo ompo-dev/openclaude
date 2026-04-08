@@ -1,44 +1,56 @@
 'use client'
 
+import { useCallback, useState } from 'react'
+
 import ChatInput from './ChatInput'
+import ChatHeader from './ChatHeader'
 import MessageArea from './MessageArea'
+import TerminalPanel from './TerminalPanel'
+import WorkspaceInspector from './WorkspaceInspector'
 import { useStore } from '@/store'
-import ConversationsView from '@/components/workspace/ConversationsView'
-import ProjectView from '@/components/workspace/ProjectView'
 import SettingsView from '@/components/workspace/SettingsView'
+import useWorkspaceData from '@/hooks/useWorkspaceData'
 
 const ChatArea = () => {
   const workspaceView = useStore((state) => state.workspaceView)
+  const [isTerminalOpen, setIsTerminalOpen] = useState(false)
+  const [isChangesOpen, setIsChangesOpen] = useState(false)
+  const { refreshWorkspaceContext, refreshBranches } = useWorkspaceData()
 
-  if (workspaceView === 'conversations') {
-    return (
-      <main className="relative m-1.5 flex flex-grow flex-col rounded-xl bg-background">
-        <ConversationsView />
-      </main>
-    )
-  }
+  const refreshAfterTerminalCommand = useCallback(async () => {
+    await Promise.all([refreshWorkspaceContext(), refreshBranches()])
+  }, [refreshBranches, refreshWorkspaceContext])
 
   if (workspaceView === 'settings') {
     return (
-      <main className="relative m-1.5 flex flex-grow flex-col rounded-xl bg-background">
+      <main className="flex min-w-0 flex-1 flex-col bg-background">
         <SettingsView />
       </main>
     )
   }
 
-  if (workspaceView === 'project') {
-    return (
-      <main className="relative m-1.5 flex flex-grow flex-col rounded-xl bg-background">
-        <ProjectView />
-      </main>
-    )
-  }
-
   return (
-    <main className="relative m-1.5 flex flex-grow flex-col rounded-xl bg-background">
-      <MessageArea />
-      <div className="sticky bottom-0 ml-9 px-4 pb-2">
-        <ChatInput />
+    <main className="flex min-w-0 flex-1 flex-col bg-background">
+      <ChatHeader
+        isTerminalOpen={isTerminalOpen}
+        onToggleTerminal={() => setIsTerminalOpen((current) => !current)}
+        isChangesOpen={isChangesOpen}
+        onToggleChanges={() => setIsChangesOpen((current) => !current)}
+      />
+      <div className="flex min-h-0 flex-1">
+        <div className="flex min-w-0 flex-1 flex-col">
+          <MessageArea />
+          <ChatInput />
+          {isTerminalOpen ? (
+            <TerminalPanel
+              onClose={() => setIsTerminalOpen(false)}
+              onCommandComplete={refreshAfterTerminalCommand}
+            />
+          ) : null}
+        </div>
+        {isChangesOpen ? (
+          <WorkspaceInspector onClose={() => setIsChangesOpen(false)} />
+        ) : null}
       </div>
     </main>
   )

@@ -12,6 +12,7 @@ from .bridge import (
     OPENCLAUDE_DIST_PATH,
     WORKSPACE_ROOT,
     ensure_state_dir,
+    get_project_workspace_root,
     merged_runtime_env,
     resolve_workspace_path,
 )
@@ -19,7 +20,8 @@ from .bridge import (
 
 class OpenClaudeAgentTools(Toolkit):
     def __init__(self, workspace_root: Path | None = None):
-        self.workspace_root = (workspace_root or WORKSPACE_ROOT).resolve()
+        self.app_root = WORKSPACE_ROOT.resolve()
+        self.workspace_root = (workspace_root or get_project_workspace_root()).resolve()
         super().__init__(
             name="openclaude_bridge",
             tools=[self.openclaude_session],
@@ -32,7 +34,7 @@ class OpenClaudeAgentTools(Toolkit):
 
         result = subprocess.run(
             ["bun", "run", "build"],
-            cwd=self.workspace_root,
+            cwd=self.app_root,
             capture_output=True,
             text=True,
             encoding="utf-8",
@@ -44,6 +46,7 @@ class OpenClaudeAgentTools(Toolkit):
             )
 
     def _resolve_openclaude_session_id(self, run_context: RunContext) -> str:
+        workspace_root = get_project_workspace_root()
         state = run_context.session_state or {}
         existing = state.get("openclaude_session_id")
         if isinstance(existing, str) and existing:
@@ -52,7 +55,7 @@ class OpenClaudeAgentTools(Toolkit):
         stable = str(
             uuid.uuid5(
                 uuid.NAMESPACE_URL,
-                f"openclaude://{self.workspace_root.as_posix()}/{run_context.user_id or 'anonymous'}/{run_context.session_id}",
+                f"openclaude://{workspace_root.as_posix()}/{run_context.user_id or 'anonymous'}/{run_context.session_id}",
             )
         )
         state["openclaude_session_id"] = stable
@@ -84,7 +87,8 @@ class OpenClaudeAgentTools(Toolkit):
         ensure_state_dir()
         self._ensure_openclaude_built()
 
-        workdir = resolve_workspace_path(cwd, base_dir=self.workspace_root)
+        workspace_root = get_project_workspace_root()
+        workdir = resolve_workspace_path(cwd, base_dir=workspace_root)
         if not workdir.is_dir():
             raise ValueError(f"cwd must be a directory inside the workspace: {cwd}")
 
@@ -131,6 +135,6 @@ class OpenClaudeAgentTools(Toolkit):
             )
 
         state["openclaude_initialized"] = True
-        state["openclaude_last_cwd"] = workdir.relative_to(self.workspace_root).as_posix()
+        state["openclaude_last_cwd"] = workdir.relative_to(workspace_root).as_posix()
         run_context.session_state = state
         return completed.stdout.strip() or "(OpenClaude finished without textual output)"

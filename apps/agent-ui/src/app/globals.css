@@ -1,31 +1,122 @@
+@import 'xterm/css/xterm.css';
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
 @layer base {
   :root {
-    --color-border-default: 255, 255, 255, 0.2;
-    --scrollbar-width: 0.1rem;
+    --background: 215 28% 7%;
+    --foreground: 213 31% 91%;
+    --border: 215 14% 19%;
+    --card: 215 22% 11%;
+    --popover: 215 22% 11%;
+    --muted: 215 17% 15%;
+    --muted-foreground: 215 13% 53%;
+    --accent: 215 18% 15%;
+    --accent-foreground: 213 31% 91%;
+    --primary: 216 84% 53%;
+    --primary-foreground: 0 0% 100%;
+    --secondary: 213 31% 91%;
+    --secondary-foreground: 215 28% 7%;
+    --destructive: 0 68% 52%;
+    --destructive-foreground: 0 0% 100%;
+    --positive: 142 71% 29%;
+    --positive-foreground: 0 0% 100%;
+    --warning: 39 74% 48%;
+    --warning-foreground: 215 28% 7%;
+    --ring: 216 84% 53%;
+    --input: 215 17% 15%;
+    --background-secondary: 215 22% 11%;
+    --background-tertiary: 215 17% 15%;
+    --scrollbar-width: 6px;
+  }
+
+  * {
+    box-sizing: border-box;
+    @apply border-border;
+  }
+
+  html,
+  body {
+    height: 100%;
+    background: #0d1117;
   }
 
   body {
-    @apply bg-background/80 text-secondary;
+    margin: 0;
+    overflow: hidden;
+    background: #0d1117;
+    color: #e6edf3;
+    font-family:
+      -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
+    font-size: 13px;
+    line-height: 1.45;
+    @apply bg-background text-secondary;
   }
+
+  button,
+  input,
+  textarea,
+  select {
+    font: inherit;
+  }
+}
+
+.fc-panel {
+  background: #161b22;
+  border: 1px solid #30363d;
+  border-radius: 8px;
+  box-shadow: none;
+}
+
+.gh-subtle-panel {
+  background: #11161d;
+  border: 1px solid #30363d;
+  border-radius: 8px;
+}
+
+.gh-hover-surface {
+  transition:
+    background-color 0.16s ease,
+    border-color 0.16s ease,
+    color 0.16s ease;
+}
+
+.gh-hover-surface:hover {
+  background: #21262d;
+  border-color: #3d444d;
 }
 
 ::-webkit-scrollbar {
   width: var(--scrollbar-width);
-}
-
-::-webkit-scrollbar-thumb {
-  --tw-border-opacity: 1;
-  @apply bg-border;
-  border-color: rgba(255, 255, 255, var(--tw-border-opacity));
-  border-radius: 9999px;
-  border-width: 1px;
+  height: var(--scrollbar-width);
 }
 
 ::-webkit-scrollbar-track {
   background-color: transparent;
-  border-radius: 9999px;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #30363d;
+  border-radius: 999px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #3d444d;
+}
+
+@keyframes blink {
+  0%,
+  50% {
+    opacity: 1;
+  }
+  51%,
+  100% {
+    opacity: 0;
+  }
+}
+
+.cursor-blink {
+  animation: blink 1s steps(1) infinite;
 }

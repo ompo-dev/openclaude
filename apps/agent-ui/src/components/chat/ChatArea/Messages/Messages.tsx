@@ -1,19 +1,16 @@
-import type { ChatMessage } from '@/types/os'
+import type { FC } from 'react'
+import React, { memo } from 'react'
 
-import { AgentMessage, UserMessage } from './MessageItem'
-import Tooltip from '@/components/ui/tooltip'
-import { memo } from 'react'
-import {
-  ToolCallProps,
-  ReasoningStepProps,
-  ReasoningProps,
-  ReferenceData,
-  Reference
-} from '@/types/os'
-import React, { type FC } from 'react'
-
-import Icon from '@/components/ui/icon'
 import ChatBlankState from './ChatBlankState'
+import { AgentMessage, UserMessage } from './MessageItem'
+import type {
+  ChatMessage,
+  ReasoningProps,
+  ReasoningStepProps,
+  Reference,
+  ReferenceData,
+  ToolCallProps
+} from '@/types/os'
 
 interface MessageListProps {
   messages: ChatMessage[]
@@ -33,14 +30,14 @@ interface ReferenceItemProps {
 }
 
 const ReferenceItem: FC<ReferenceItemProps> = ({ reference }) => (
-  <div className="relative flex h-[63px] w-[190px] cursor-default flex-col justify-between overflow-hidden rounded-md bg-background-secondary p-3 transition-colors hover:bg-background-secondary/80">
-    <p className="text-sm font-medium text-primary">{reference.name}</p>
-    <p className="truncate text-xs text-primary/40">{reference.content}</p>
+  <div className="border border-border px-3 py-2">
+    <p className="text-xs text-secondary">{reference.name}</p>
+    <p className="mt-1 truncate text-[11px] text-muted">{reference.content}</p>
   </div>
 )
 
 const References: FC<ReferenceProps> = ({ references }) => (
-  <div className="flex flex-col gap-4">
+  <div className="flex flex-col gap-3 border border-border px-3 py-2">
     {references.map((referenceData, index) => (
       <div
         key={`${referenceData.query}-${index}`}
@@ -61,54 +58,25 @@ const References: FC<ReferenceProps> = ({ references }) => (
 
 const AgentMessageWrapper = ({ message }: MessageWrapperProps) => {
   return (
-    <div className="flex flex-col gap-y-9">
+    <div className="flex flex-col gap-y-3">
       {message.extra_data?.reasoning_steps &&
         message.extra_data.reasoning_steps.length > 0 && (
-          <div className="flex items-start gap-4">
-            <Tooltip
-              delayDuration={0}
-              content={<p className="text-accent">Reasoning</p>}
-              side="top"
-            >
-              <Icon type="reasoning" size="sm" />
-            </Tooltip>
-            <div className="flex flex-col gap-3">
-              <p className="text-xs uppercase">Reasoning</p>
+          <div className="mx-auto max-w-3xl px-4">
+            <div className="border border-border px-3 py-2">
+              <p className="mb-2 text-[11px] uppercase text-muted">Reasoning</p>
               <Reasonings reasoning={message.extra_data.reasoning_steps} />
             </div>
           </div>
         )}
       {message.extra_data?.references &&
         message.extra_data.references.length > 0 && (
-          <div className="flex items-start gap-4">
-            <Tooltip
-              delayDuration={0}
-              content={<p className="text-accent">References</p>}
-              side="top"
-            >
-              <Icon type="references" size="sm" />
-            </Tooltip>
-            <div className="flex flex-col gap-3">
-              <References references={message.extra_data.references} />
-            </div>
+          <div className="mx-auto max-w-3xl px-4">
+            <References references={message.extra_data.references} />
           </div>
         )}
       {message.tool_calls && message.tool_calls.length > 0 && (
-        <div className="flex items-start gap-3">
-          <Tooltip
-            delayDuration={0}
-            content={<p className="text-accent">Tool Calls</p>}
-            side="top"
-          >
-            <Icon
-              type="hammer"
-              className="rounded-lg bg-background-secondary p-1"
-              size="sm"
-              color="secondary"
-            />
-          </Tooltip>
-
-          <div className="flex flex-wrap gap-2">
+        <div className="mx-auto max-w-3xl px-4">
+          <div className="flex flex-wrap gap-2 border border-border px-3 py-2">
             {message.tool_calls.map((toolCall, index) => (
               <ToolComponent
                 key={
@@ -127,7 +95,7 @@ const AgentMessageWrapper = ({ message }: MessageWrapperProps) => {
 }
 const Reasoning: FC<ReasoningStepProps> = ({ index, stepTitle }) => (
   <div className="flex items-center gap-2 text-secondary">
-    <div className="flex h-[20px] items-center rounded-md bg-background-secondary p-2">
+    <div className="flex h-5 items-center border border-border px-2">
       <p className="text-xs">STEP {index + 1}</p>
     </div>
     <p className="text-xs">{stepTitle}</p>
@@ -146,8 +114,8 @@ const Reasonings: FC<ReasoningProps> = ({ reasoning }) => (
 )
 
 const ToolComponent = memo(({ tools }: ToolCallProps) => (
-  <div className="cursor-default rounded-full bg-accent px-2 py-1.5 text-xs">
-    <p className="font-dmmono uppercase text-primary/80">{tools.tool_name}</p>
+  <div className="cursor-default border border-border px-2 py-1 text-xs">
+    <p className="font-dmmono uppercase text-secondary">{tools.tool_name}</p>
   </div>
 ))
 ToolComponent.displayName = 'ToolComponent'

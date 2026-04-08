@@ -3,8 +3,12 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
 import subprocess
+import threading
+import time
 import uuid
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -15,11 +19,23 @@ from agno.models.openai.like import OpenAILike
 
 from .openclaude_model import OpenClaudeModel
 
+try:
+    if os.name == "nt":
+        from winpty import PtyProcess  # type: ignore[import-not-found]
+    else:
+        PtyProcess = None
+except Exception:
+    PtyProcess = None
+
 WORKSPACE_ROOT = Path(__file__).resolve().parents[2]
+PROJECT_WORKSPACE_ROOT = Path(
+    os.getenv("OPENCLAUDE_TARGET_WORKSPACE") or str(WORKSPACE_ROOT)
+).expanduser().resolve()
 AGNO_STATE_DIR = WORKSPACE_ROOT / ".agno"
 AGNO_DB_PATH = AGNO_STATE_DIR / "agentos.sqlite"
 AGNO_ROUTER_CONFIG_PATH = AGNO_STATE_DIR / "router.json"
 AGNO_TOPICS_PATH = AGNO_STATE_DIR / "topics.json"
+AGNO_TERMINAL_HISTORY_PATH = AGNO_STATE_DIR / "terminal-history.json"
 OPENCLAUDE_DIST_PATH = WORKSPACE_ROOT / "dist" / "cli.mjs"
 OPENCLAUDE_PROFILE_PATH = WORKSPACE_ROOT / ".openclaude-profile.json"
 OPENCLAUDE_WEB_CATALOG_PATH = WORKSPACE_ROOT / "scripts" / "openclaude-web-catalog.ts"
@@ -104,8 +120,11 @@ PLATFORM_FEATURES = [
 ]
 
 MAX_CHANGED_FILES = 12
+MAX_FULL_CHANGED_FILES = 250
 MAX_PATCH_CHARS = 2400
 MAX_UNTRACKED_PREVIEW_LINES = 80
+MAX_TERMINAL_OUTPUT_CHARS = 16000
+MAX_TERMINAL_ENTRIES = 4000
 STANDARD_AGENT_ROUTING_KEYS = (
     "default",
     "Explore",
@@ -113,11 +132,79 @@ STANDARD_AGENT_ROUTING_KEYS = (
     "general-purpose",
     "frontend-dev",
 )
+MAX_BRANCHES = 80
+
+_ANSI_OSC_PATTERN = re.compile(r"\x1b\][^\x07]*(?:\x07|\x1b\\)")
+_ANSI_CSI_PATTERN = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
+_ANSI_SINGLE_PATTERN = re.compile(r"\x1b[@-_]")
+_POWERSHELL_PROMPT_PATTERN = re.compile(r"PS (?P<cwd>[A-Za-z]:[^>\r\n]*)>\s*$")
+
+
+def _strip_terminal_ansi(text: str) -> str:
+    cleaned = _ANSI_OSC_PATTERN.sub("", text)
+    cleaned = _ANSI_CSI_PATTERN.sub("", cleaned)
+    cleaned = _ANSI_SINGLE_PATTERN.sub("", cleaned)
+    cleaned = cleaned.replace("\x00", "")
+    cleaned = cleaned.replace("\r\n", "\n").replace("\r", "\n")
+    return cleaned
+
+
+@dataclass
+class _InteractiveTerminalSession:
+    command: str
+    cwd: Path
+    process: Any
+    buffer: list[str] = field(default_factory=list)
+    lock: threading.Lock = field(default_factory=threading.Lock)
+    last_output_at: float = field(default_factory=time.monotonic)
+    created_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
+    thread: threading.Thread | None = None
+
+
+_INTERACTIVE_TERMINAL_SESSION: _InteractiveTerminalSession | None = None
+
+
+def _resolve_terminal_cwd() -> Path:
+    workspace_root = get_project_workspace_root().resolve()
+    payload = load_terminal_history_payload()
+    current_cwd = Path(payload.get("cwd") or str(workspace_root)).expanduser().resolve()
+    if not current_cwd.exists() or not current_cwd.is_dir():
+        current_cwd = workspace_root
+    return current_cwd
 
 
 def ensure_state_dir() -> Path:
     AGNO_STATE_DIR.mkdir(parents=True, exist_ok=True)
     return AGNO_STATE_DIR
+
+
+def get_project_workspace_root() -> Path:
+    return PROJECT_WORKSPACE_ROOT
+
+
+def set_project_workspace_root(path: str | Path | None) -> Path:
+    global PROJECT_WORKSPACE_ROOT
+
+    if path is None:
+        _close_interactive_terminal_session()
+        PROJECT_WORKSPACE_ROOT = WORKSPACE_ROOT.resolve()
+        save_terminal_history_payload(
+            {"entries": [], "cwd": str(PROJECT_WORKSPACE_ROOT)}
+        )
+        return PROJECT_WORKSPACE_ROOT
+
+    candidate = Path(path).expanduser().resolve()
+    if not candidate.exists():
+        raise ValueError(f"Workspace path not found: {candidate}")
+    if not candidate.is_dir():
+        raise ValueError(f"Workspace path must be a directory: {candidate}")
+
+    _close_interactive_terminal_session()
+    PROJECT_WORKSPACE_ROOT = candidate
+    save_terminal_history_payload(
+        {"entries": [], "cwd": str(PROJECT_WORKSPACE_ROOT)}
+    )
+    return PROJECT_WORKSPACE_ROOT
 
 
 def _trimmed(value: Any) -> str | None:
@@ -617,7 +704,7 @@ def resolve_agno_model() -> Any:
             provider_name=PROFILE_LABELS.get(runtime_profile, "OpenClaude Runtime"),
             base_url=_trimmed(runtime_snapshot.get("base_url")),
             runtime_env=env,
-            workspace_root=WORKSPACE_ROOT,
+            workspace_root=get_project_workspace_root(),
             cli_path=OPENCLAUDE_DIST_PATH,
             projects_dir=get_openclaude_config_home_dir() / "projects",
         )
@@ -671,7 +758,7 @@ def resolve_workspace_path(
     allow_missing: bool = False,
     base_dir: Path | None = None,
 ) -> Path:
-    root = (base_dir or WORKSPACE_ROOT).resolve()
+    root = (base_dir or get_project_workspace_root()).resolve()
     candidate = (root / path).resolve()
 
     if candidate != root and root not in candidate.parents:
@@ -723,6 +810,337 @@ def _write_json_file(path: Path, payload: dict[str, Any]) -> dict[str, Any]:
     ensure_state_dir()
     path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
     return payload
+
+
+def load_terminal_history_payload() -> dict[str, Any]:
+    workspace_root = get_project_workspace_root().resolve()
+    data = _read_json_file(
+        AGNO_TERMINAL_HISTORY_PATH,
+        {
+            "entries": [],
+            "cwd": str(workspace_root),
+            "workspace_root": str(workspace_root),
+        },
+    )
+    entries = data.get("entries")
+    if not isinstance(entries, list):
+        entries = []
+
+    saved_workspace_root = _trimmed(data.get("workspace_root"))
+    raw_cwd = _trimmed(data.get("cwd"))
+    cwd_path = workspace_root
+    if saved_workspace_root == str(workspace_root) and raw_cwd:
+        candidate = Path(raw_cwd).expanduser().resolve()
+        if candidate.exists() and candidate.is_dir():
+            cwd_path = candidate
+
+    return {
+        "entries": entries[-MAX_TERMINAL_ENTRIES:],
+        "cwd": str(cwd_path),
+        "workspace_root": str(workspace_root),
+    }
+
+
+def save_terminal_history_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    entries = payload.get("entries")
+    normalized_entries = entries if isinstance(entries, list) else []
+    workspace_root = get_project_workspace_root().resolve()
+    raw_cwd = _trimmed(payload.get("cwd")) or str(workspace_root)
+    cwd_path = workspace_root
+    candidate = Path(raw_cwd).expanduser().resolve()
+    if candidate.exists() and candidate.is_dir():
+        cwd_path = candidate
+
+    return _write_json_file(
+        AGNO_TERMINAL_HISTORY_PATH,
+        {
+            "entries": normalized_entries[-MAX_TERMINAL_ENTRIES:],
+            "cwd": str(cwd_path),
+            "workspace_root": str(workspace_root),
+        },
+    )
+
+
+def _append_terminal_entries(*entries: dict[str, Any], cwd: str | Path | None = None) -> dict[str, Any]:
+    payload = load_terminal_history_payload()
+    history = payload["entries"]
+    history.extend(entries)
+    next_cwd = str(cwd) if cwd is not None else payload.get("cwd")
+    return save_terminal_history_payload({"entries": history, "cwd": next_cwd})
+
+
+def _close_interactive_terminal_session() -> None:
+    global _INTERACTIVE_TERMINAL_SESSION
+
+    session = _INTERACTIVE_TERMINAL_SESSION
+    _INTERACTIVE_TERMINAL_SESSION = None
+    if not session:
+        return
+
+    process = session.process
+    try:
+        if process and process.isalive():
+            process.terminate()
+    except Exception:
+        pass
+
+
+def _get_active_terminal_session() -> _InteractiveTerminalSession | None:
+    global _INTERACTIVE_TERMINAL_SESSION
+
+    session = _INTERACTIVE_TERMINAL_SESSION
+    if not session:
+        return None
+
+    try:
+        alive = bool(session.process and session.process.isalive())
+    except Exception:
+        alive = False
+
+    if alive:
+        return session
+
+    _close_interactive_terminal_session()
+    return None
+
+    try:
+        if process:
+            process.close()
+    except Exception:
+        pass
+
+
+def _interactive_reader_loop(session: _InteractiveTerminalSession) -> None:
+    process = session.process
+    while True:
+        try:
+            chunk = process.read(1024)
+        except EOFError:
+            break
+        except Exception:
+            break
+
+        if not chunk:
+            continue
+
+        with session.lock:
+            session.buffer.append(str(chunk))
+            session.last_output_at = time.monotonic()
+
+
+def _build_interactive_terminal_invocation(command: str) -> list[str]:
+    if os.name == "nt":
+        return ["powershell.exe", "-NoLogo", "-NoProfile", "-Command", command]
+
+    shell = os.getenv("SHELL") or "/bin/bash"
+    return [shell, "-lc", command]
+
+
+def _spawn_interactive_terminal_session(
+    command: str, cwd: Path
+) -> _InteractiveTerminalSession:
+    if PtyProcess is None:
+        raise ValueError("Interactive terminal support is not available in this build.")
+
+    env = os.environ.copy()
+    normalized_command = (_trimmed(command) or "").lower()
+    if normalized_command in {"openclaude", "claude"} or normalized_command.startswith(
+        ("openclaude ", "claude ")
+    ):
+        env["OPENCLAUDE_EMBEDDED_TERMINAL_SESSION"] = "1"
+
+    process = PtyProcess.spawn(
+        _build_interactive_terminal_invocation(command),
+        cwd=str(cwd),
+        env=env,
+        dimensions=(30, 120),
+    )
+    session = _InteractiveTerminalSession(command=command, cwd=cwd, process=process)
+    session.thread = threading.Thread(
+        target=_interactive_reader_loop,
+        args=(session,),
+        name="openclaude-terminal-reader",
+        daemon=True,
+    )
+    session.thread.start()
+    return session
+
+
+def _spawn_terminal_shell_session(cwd: Path) -> _InteractiveTerminalSession:
+    if PtyProcess is None:
+        raise ValueError("Interactive terminal support is not available in this build.")
+
+    if os.name == "nt":
+        argv = ["powershell.exe", "-NoLogo"]
+    else:
+        argv = [os.getenv("SHELL") or "/bin/bash"]
+
+    process = PtyProcess.spawn(
+        argv,
+        cwd=str(cwd),
+        env=os.environ.copy(),
+        dimensions=(30, 120),
+    )
+    session = _InteractiveTerminalSession(command="", cwd=cwd, process=process)
+    session.thread = threading.Thread(
+        target=_interactive_reader_loop,
+        args=(session,),
+        name="openclaude-terminal-shell-reader",
+        daemon=True,
+    )
+    session.thread.start()
+    return session
+
+
+def _collect_interactive_terminal_output(
+    session: _InteractiveTerminalSession,
+    *,
+    max_wait_seconds: float = 4.0,
+    quiet_seconds: float = 0.25,
+    min_wait_seconds: float = 0.0,
+) -> str:
+    deadline = time.monotonic() + max_wait_seconds
+    earliest_break = time.monotonic() + min_wait_seconds
+    observed_output = False
+
+    while time.monotonic() < deadline:
+        with session.lock:
+            has_output = bool(session.buffer)
+            last_output_at = session.last_output_at
+
+        if has_output:
+            observed_output = True
+            if (
+                time.monotonic() >= earliest_break
+                and time.monotonic() - last_output_at >= quiet_seconds
+            ):
+                break
+        elif observed_output and time.monotonic() >= earliest_break:
+            break
+
+        time.sleep(0.05)
+
+    with session.lock:
+        combined = "".join(session.buffer)
+        session.buffer.clear()
+
+    cleaned = _strip_terminal_ansi(combined)
+    cleaned = cleaned.replace("\n\n\n", "\n\n")
+    return cleaned.strip()
+
+
+def _drain_interactive_terminal_output(
+    session: _InteractiveTerminalSession,
+    *,
+    max_wait_seconds: float = 0.35,
+    quiet_seconds: float = 0.08,
+    min_wait_seconds: float = 0.0,
+) -> tuple[str, str]:
+    deadline = time.monotonic() + max_wait_seconds
+    earliest_break = time.monotonic() + min_wait_seconds
+    observed_output = False
+
+    while time.monotonic() < deadline:
+        with session.lock:
+            has_output = bool(session.buffer)
+            last_output_at = session.last_output_at
+
+        if has_output:
+            observed_output = True
+            if (
+                time.monotonic() >= earliest_break
+                and time.monotonic() - last_output_at >= quiet_seconds
+            ):
+                break
+        elif observed_output and time.monotonic() >= earliest_break:
+            break
+
+        time.sleep(0.03)
+
+    with session.lock:
+        raw_output = "".join(session.buffer)
+        session.buffer.clear()
+
+    cleaned_output = _strip_terminal_ansi(raw_output).replace("\n\n\n", "\n\n")
+    return raw_output, cleaned_output.strip()
+
+
+def _ensure_terminal_shell_session(cwd: Path) -> _InteractiveTerminalSession | None:
+    global _INTERACTIVE_TERMINAL_SESSION
+
+    if PtyProcess is None:
+        return None
+
+    session = _get_active_terminal_session()
+    if session and session.command:
+        return session
+
+    if session is None or session.cwd != cwd:
+        _close_interactive_terminal_session()
+        session = _spawn_terminal_shell_session(cwd)
+        _INTERACTIVE_TERMINAL_SESSION = session
+        _flush_terminal_shell_output(session, max_wait_seconds=1.75, min_wait_seconds=0.4)
+
+    return session
+
+
+def _flush_terminal_shell_output(
+    session: _InteractiveTerminalSession,
+    *,
+    max_wait_seconds: float = 0.35,
+    min_wait_seconds: float = 0.0,
+) -> None:
+    raw_output, cleaned_output = _drain_interactive_terminal_output(
+        session,
+        max_wait_seconds=max_wait_seconds,
+        min_wait_seconds=min_wait_seconds,
+    )
+    if not raw_output:
+        return
+
+    next_cwd = _extract_prompt_cwd_from_output(cleaned_output) or session.cwd
+    session.cwd = next_cwd
+    if session.command:
+        entry_text = raw_output
+        is_raw = True
+    else:
+        entry_text = cleaned_output
+        is_raw = False
+
+    if not entry_text:
+        return
+    _append_terminal_entries(
+        {
+            "id": str(uuid.uuid4()),
+            "kind": "output",
+            "text": entry_text,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "raw": is_raw,
+        },
+        cwd=next_cwd,
+    )
+
+
+def _extract_prompt_cwd_from_output(output: str) -> Path | None:
+    if not output:
+        return None
+
+    matches = list(_POWERSHELL_PROMPT_PATTERN.finditer(output))
+    if not matches:
+        return None
+
+    candidate = _trimmed(matches[-1].group("cwd"))
+    if not candidate:
+        return None
+
+    candidate_path = Path(candidate).expanduser().resolve()
+    if candidate_path.exists() and candidate_path.is_dir():
+        return candidate_path
+    return None
+
+
+def _should_use_interactive_terminal_session(command: str) -> bool:
+    return os.name == "nt" and PtyProcess is not None and _is_interactive_terminal_command(command)
 
 
 def _normalize_agent_models(raw_value: Any) -> dict[str, dict[str, str]]:
@@ -784,7 +1202,7 @@ def _run_git(
     try:
         completed = subprocess.run(
             ["git", *args],
-            cwd=str((cwd or WORKSPACE_ROOT).resolve()),
+            cwd=str((cwd or get_project_workspace_root()).resolve()),
             capture_output=True,
             text=True,
             encoding="utf-8",
@@ -929,17 +1347,18 @@ def _build_patch_preview(
     return combined, truncated
 
 
-def get_workspace_context() -> dict[str, Any]:
-    repo_root_value = _run_git(["rev-parse", "--show-toplevel"])
+def _build_workspace_context(max_changed_files: int | None = MAX_CHANGED_FILES) -> dict[str, Any]:
+    workspace_root = get_project_workspace_root()
+    repo_root_value = _run_git(["rev-parse", "--show-toplevel"], cwd=workspace_root)
     topics = list_topics()
 
     if not repo_root_value:
         return {
-            "workspace_root": str(WORKSPACE_ROOT),
-            "project_root": str(WORKSPACE_ROOT),
-            "project_label": WORKSPACE_ROOT.name,
+            "workspace_root": str(workspace_root),
+            "project_root": str(workspace_root),
+            "project_label": workspace_root.name,
             "repo_root": None,
-            "repo_name": WORKSPACE_ROOT.name,
+            "repo_name": workspace_root.name,
             "origin_url": None,
             "branch": None,
             "head": None,
@@ -949,6 +1368,11 @@ def get_workspace_context() -> dict[str, Any]:
             "is_git_repo": False,
             "is_dirty": False,
             "changed_file_count": 0,
+            "total_insertions": 0,
+            "total_deletions": 0,
+            "staged_file_count": 0,
+            "unstaged_file_count": 0,
+            "untracked_file_count": 0,
             "topic_count": len(topics),
             "changed_files": [],
         }
@@ -967,6 +1391,11 @@ def get_workspace_context() -> dict[str, Any]:
     ahead = 0
     behind = 0
 
+    total_insertions = 0
+    total_deletions = 0
+    staged_file_count = 0
+    unstaged_file_count = 0
+    untracked_file_count = 0
     changed_files: list[dict[str, Any]] = []
     status_lines = status_output.splitlines()
     if status_lines and status_lines[0].startswith("## "):
@@ -990,9 +1419,6 @@ def get_workspace_context() -> dict[str, Any]:
         status_lines = status_lines[1:]
 
     for line in status_lines:
-        if len(changed_files) >= MAX_CHANGED_FILES:
-            break
-
         if len(line) < 3:
             continue
 
@@ -1003,10 +1429,24 @@ def get_workspace_context() -> dict[str, Any]:
             continue
 
         kind = _status_to_kind(staged_status, unstaged_status)
+        if staged_status != " ":
+            staged_file_count += 1
+        if unstaged_status != " ":
+            unstaged_file_count += 1
+        if kind == "untracked":
+            untracked_file_count += 1
         stats = _merge_file_stats(
             cached_numstat.get(relative_path),
             numstat.get(relative_path),
         )
+        if isinstance(stats.get("insertions"), int):
+            total_insertions += int(stats["insertions"])
+        if isinstance(stats.get("deletions"), int):
+            total_deletions += int(stats["deletions"])
+
+        if max_changed_files is not None and len(changed_files) >= max_changed_files:
+            continue
+
         patch_preview, patch_truncated = _build_patch_preview(
             repo_root=repo_root,
             relative_path=relative_path,
@@ -1029,7 +1469,7 @@ def get_workspace_context() -> dict[str, Any]:
         )
 
     return {
-        "workspace_root": str(WORKSPACE_ROOT),
+        "workspace_root": str(workspace_root),
         "project_root": str(repo_root),
         "project_label": repo_name,
         "repo_root": str(repo_root),
@@ -1041,11 +1481,20 @@ def get_workspace_context() -> dict[str, Any]:
         "ahead": ahead,
         "behind": behind,
         "is_git_repo": True,
-        "is_dirty": bool(changed_files),
+        "is_dirty": bool(status_lines),
         "changed_file_count": len(status_lines),
+        "total_insertions": total_insertions,
+        "total_deletions": total_deletions,
+        "staged_file_count": staged_file_count,
+        "unstaged_file_count": unstaged_file_count,
+        "untracked_file_count": untracked_file_count,
         "topic_count": len(topics),
         "changed_files": changed_files,
     }
+
+
+def get_workspace_context() -> dict[str, Any]:
+    return _build_workspace_context(max_changed_files=MAX_CHANGED_FILES)
 
 
 def load_topics_payload() -> dict[str, Any]:
@@ -1077,8 +1526,11 @@ def load_topics_payload() -> dict[str, Any]:
                 "name": name,
                 "slug": _trimmed(item.get("slug")) or _slugify(name),
                 "description": _trimmed(item.get("description")),
-                "project_root": _trimmed(item.get("project_root")) or str(WORKSPACE_ROOT),
-                "repo_name": _trimmed(item.get("repo_name")) or WORKSPACE_ROOT.name,
+                "kind": _trimmed(item.get("kind")) or "custom",
+                "project_root": _trimmed(item.get("project_root"))
+                or str(get_project_workspace_root()),
+                "repo_name": _trimmed(item.get("repo_name"))
+                or get_project_workspace_root().name,
                 "branch": _trimmed(item.get("branch")),
                 "created_at": _trimmed(item.get("created_at"))
                 or datetime.now(timezone.utc).isoformat(),
@@ -1113,8 +1565,9 @@ def create_topic(name: str, description: str | None = None) -> dict[str, Any]:
         "name": normalized_name,
         "slug": _slugify(normalized_name),
         "description": _trimmed(description),
-        "project_root": context.get("project_root") or str(WORKSPACE_ROOT),
-        "repo_name": context.get("repo_name") or WORKSPACE_ROOT.name,
+        "kind": "custom",
+        "project_root": context.get("project_root") or str(get_project_workspace_root()),
+        "repo_name": context.get("repo_name") or get_project_workspace_root().name,
         "branch": context.get("branch"),
         "created_at": now,
         "updated_at": now,
@@ -1174,6 +1627,936 @@ def detach_session_from_topics(session_id: str) -> list[dict[str, Any]]:
         save_topics_payload(payload)
 
     return list_topics()
+
+
+def resolve_workspace_topic(create_if_missing: bool = True) -> dict[str, Any] | None:
+    context = get_workspace_context()
+    project_root = _trimmed(context.get("project_root")) or str(get_project_workspace_root())
+    repo_name = _trimmed(context.get("repo_name")) or get_project_workspace_root().name
+    branch = _trimmed(context.get("branch"))
+
+    payload = load_topics_payload()
+    topics = payload["topics"]
+    for topic in topics:
+        same_project = _trimmed(topic.get("project_root")) == project_root
+        if not same_project:
+            continue
+
+        if topic.get("kind") == "workspace" or _trimmed(topic.get("name")) == repo_name:
+            topic["name"] = repo_name
+            topic["slug"] = _slugify(repo_name)
+            topic["project_root"] = project_root
+            topic["repo_name"] = repo_name
+            topic["branch"] = branch
+            topic["updated_at"] = datetime.now(timezone.utc).isoformat()
+            save_topics_payload(payload)
+            return topic
+
+    if not create_if_missing:
+        return None
+
+    now = datetime.now(timezone.utc).isoformat()
+    topic = {
+        "id": str(uuid.uuid4()),
+        "name": repo_name,
+        "slug": _slugify(repo_name),
+        "description": "Workspace topic",
+        "kind": "workspace",
+        "project_root": project_root,
+        "repo_name": repo_name,
+        "branch": branch,
+        "created_at": now,
+        "updated_at": now,
+        "session_ids": [],
+    }
+    payload["topics"] = [topic, *topics]
+    save_topics_payload(payload)
+    return topic
+
+
+def _parse_branch_listing(raw_output: str | None, current_branch: str | None) -> list[dict[str, Any]]:
+    if not raw_output:
+        return []
+
+    items: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for line in raw_output.splitlines():
+        value = line.strip()
+        if not value:
+            continue
+
+        is_remote = value.startswith("refs/remotes/")
+        name = value.removeprefix("refs/heads/").removeprefix("refs/remotes/")
+        if name == "origin/HEAD" or name.endswith("/HEAD"):
+            continue
+        if name in seen:
+            continue
+        seen.add(name)
+        items.append(
+            {
+                "name": name,
+                "short_name": name.split("/", 1)[-1] if is_remote else name,
+                "kind": "remote" if is_remote else "local",
+                "current": name == current_branch,
+            }
+        )
+
+    items.sort(
+        key=lambda item: (
+            0 if item["current"] else 1,
+            0 if item["kind"] == "local" else 1,
+            item["name"].lower(),
+        )
+    )
+    return items[:MAX_BRANCHES]
+
+
+def list_git_branches() -> dict[str, Any]:
+    context = get_workspace_context()
+    project_root = Path(context.get("project_root") or get_project_workspace_root()).resolve()
+
+    if not context.get("is_git_repo"):
+        return {
+            "items": [],
+            "current_branch": None,
+            "project_root": str(project_root),
+            "repo_name": context.get("repo_name"),
+        }
+
+    current_branch = _trimmed(context.get("branch"))
+    raw_output = _run_git(
+        ["for-each-ref", "--format=%(refname)", "refs/heads", "refs/remotes"],
+        cwd=project_root,
+    )
+    return {
+        "items": _parse_branch_listing(raw_output, current_branch),
+        "current_branch": current_branch,
+        "project_root": str(project_root),
+        "repo_name": context.get("repo_name"),
+    }
+
+
+def get_workspace_bootstrap() -> dict[str, Any]:
+    return {
+        "workspace": get_workspace_context(),
+        "topic": resolve_workspace_topic(create_if_missing=True),
+        "branches": list_git_branches(),
+        "topics": list_topics(),
+    }
+
+
+def switch_git_branch(branch_name: str) -> dict[str, Any]:
+    normalized_branch = _trimmed(branch_name)
+    if not normalized_branch:
+        raise ValueError("branch_name is required.")
+
+    context = get_workspace_context()
+    project_root = Path(context.get("project_root") or get_project_workspace_root()).resolve()
+    if not context.get("is_git_repo"):
+        raise ValueError("Current workspace is not a git repository.")
+
+    local_exists = bool(
+        _run_git(["show-ref", "--verify", f"refs/heads/{normalized_branch}"], cwd=project_root)
+    )
+    remote_exists = bool(
+        _run_git(["show-ref", "--verify", f"refs/remotes/{normalized_branch}"], cwd=project_root)
+    )
+    alt_remote_exists = bool(
+        _run_git(
+            ["show-ref", "--verify", f"refs/remotes/origin/{normalized_branch}"],
+            cwd=project_root,
+        )
+    )
+
+    if local_exists:
+        command = ["switch", normalized_branch]
+    elif remote_exists:
+        command = ["switch", "--track", normalized_branch]
+    elif alt_remote_exists:
+        command = ["switch", "--track", f"origin/{normalized_branch}"]
+    else:
+        raise ValueError(f"Branch not found: {normalized_branch}")
+
+    completed = subprocess.run(
+        ["git", *command],
+        cwd=str(project_root),
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+    if completed.returncode != 0:
+        raise ValueError(completed.stderr.strip() or completed.stdout.strip() or "Failed to switch branch.")
+
+    return {
+        "workspace": get_workspace_context(),
+        "branches": list_git_branches(),
+        "topic": resolve_workspace_topic(create_if_missing=True),
+        "topics": list_topics(),
+    }
+
+
+def create_git_branch(branch_name: str, start_point: str | None = None, switch: bool = True) -> dict[str, Any]:
+    normalized_branch = _trimmed(branch_name)
+    normalized_start = _trimmed(start_point)
+    if not normalized_branch:
+        raise ValueError("branch_name is required.")
+
+    context = get_workspace_context()
+    project_root = Path(context.get("project_root") or get_project_workspace_root()).resolve()
+    if not context.get("is_git_repo"):
+        raise ValueError("Current workspace is not a git repository.")
+
+    command = ["switch", "-c", normalized_branch]
+    if normalized_start:
+        command.append(normalized_start)
+    if not switch:
+        command = ["branch", normalized_branch]
+        if normalized_start:
+            command.append(normalized_start)
+
+    completed = subprocess.run(
+        ["git", *command],
+        cwd=str(project_root),
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+    if completed.returncode != 0:
+        raise ValueError(completed.stderr.strip() or completed.stdout.strip() or "Failed to create branch.")
+
+    return {
+        "workspace": get_workspace_context(),
+        "branches": list_git_branches(),
+        "topic": resolve_workspace_topic(create_if_missing=True),
+        "topics": list_topics(),
+    }
+
+
+def _command_exists(command: str) -> bool:
+    return shutil.which(command) is not None
+
+
+def _expand_candidate_path(candidate: str) -> str:
+    return os.path.expandvars(candidate).expanduser() if hasattr(os.path, "expandvars") else candidate
+
+
+def _resolve_launch_target_executable(candidates: list[str]) -> str | None:
+    for candidate in candidates:
+        expanded = os.path.expandvars(candidate)
+        if os.path.isabs(expanded) and Path(expanded).exists():
+            return expanded
+        resolved = shutil.which(candidate)
+        if resolved:
+            return resolved
+    return None
+
+
+def get_open_with_targets() -> dict[str, Any]:
+    windows_targets = [
+        {
+            "id": "cursor",
+            "label": "Cursor",
+            "description": "Abrir o workspace no Cursor.",
+            "candidates": [
+                "cursor",
+                "cursor.cmd",
+                r"%LOCALAPPDATA%\Programs\Cursor\Cursor.exe",
+            ],
+        },
+        {
+            "id": "vscode",
+            "label": "VS Code",
+            "description": "Abrir o workspace no Visual Studio Code.",
+            "candidates": [
+                "code",
+                "code.cmd",
+                r"%LOCALAPPDATA%\Programs\Microsoft VS Code\Code.exe",
+            ],
+        },
+        {
+            "id": "terminal",
+            "label": "Terminal",
+            "description": "Abrir um terminal local no workspace.",
+            "candidates": ["wt.exe", "powershell.exe"],
+        },
+        {
+            "id": "git-bash",
+            "label": "Git Bash",
+            "description": "Abrir Git Bash no workspace.",
+            "candidates": [
+                "git-bash.exe",
+                r"%ProgramFiles%\Git\git-bash.exe",
+                r"%ProgramFiles(x86)%\Git\git-bash.exe",
+            ],
+        },
+        {
+            "id": "wsl",
+            "label": "WSL",
+            "description": "Abrir uma shell WSL posicionada no workspace.",
+            "candidates": ["wsl.exe"],
+        },
+        {
+            "id": "explorer",
+            "label": "File Explorer",
+            "description": "Abrir o diretório no Windows Explorer.",
+            "candidates": ["explorer.exe"],
+        },
+    ]
+    unix_targets = [
+        {
+            "id": "vscode",
+            "label": "VS Code",
+            "description": "Abrir o workspace no Visual Studio Code.",
+            "candidates": ["code"],
+        },
+        {
+            "id": "terminal",
+            "label": "Terminal",
+            "description": "Abrir um terminal local no workspace.",
+            "candidates": ["x-terminal-emulator", "gnome-terminal", "konsole", "wezterm"],
+        },
+        {
+            "id": "finder",
+            "label": "Finder",
+            "description": "Abrir o diretório no gerenciador de arquivos.",
+            "candidates": ["open", "xdg-open"],
+        },
+    ]
+
+    targets_config = windows_targets if os.name == "nt" else unix_targets
+    items: list[dict[str, Any]] = []
+    for item in targets_config:
+        executable = _resolve_launch_target_executable(item["candidates"])
+        items.append(
+            {
+                "id": item["id"],
+                "label": item["label"],
+                "description": item["description"],
+                "installed": executable is not None,
+                "preferred": item["id"] in {"cursor", "vscode", "explorer", "terminal"},
+                "executable": executable,
+            }
+        )
+    return {"items": items}
+
+
+def launch_open_with_target(target_id: str) -> dict[str, Any]:
+    normalized_target = _trimmed(target_id)
+    if not normalized_target:
+        raise ValueError("target_id is required.")
+
+    targets = {item["id"]: item for item in get_open_with_targets()["items"]}
+    target = targets.get(normalized_target)
+    if not target or not target.get("installed"):
+        raise ValueError(f"Launch target is not available: {normalized_target}")
+
+    workspace_root = get_project_workspace_root()
+    executable = str(target["executable"])
+
+    if os.name == "nt":
+        if normalized_target == "explorer":
+            command = [executable, str(workspace_root)]
+        elif normalized_target == "terminal":
+            if executable.lower().endswith("wt.exe"):
+                command = [executable, "-d", str(workspace_root)]
+            else:
+                command = [
+                    executable,
+                    "-NoExit",
+                    "-Command",
+                    f'Set-Location -LiteralPath "{workspace_root}"',
+                ]
+        elif normalized_target == "git-bash":
+            command = [executable, f"--cd={workspace_root}"]
+        elif normalized_target == "wsl":
+            command = [executable, "--cd", str(workspace_root)]
+        else:
+            command = [executable, str(workspace_root)]
+    else:
+        if normalized_target == "finder":
+            command = [executable, str(workspace_root)]
+        elif normalized_target == "terminal":
+            if executable.endswith("wezterm"):
+                command = [executable, "start", "--cwd", str(workspace_root)]
+            else:
+                command = [executable, str(workspace_root)]
+        else:
+            command = [executable, str(workspace_root)]
+
+    try:
+        subprocess.Popen(
+            command,
+            cwd=str(workspace_root),
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+    except Exception as exc:
+        raise ValueError(f"Failed to launch {target['label']}: {exc}") from exc
+
+    return {
+        "target": normalized_target,
+        "label": target["label"],
+        "workspace": str(workspace_root),
+    }
+
+
+def browse_workspace_folder(title: str | None = None) -> dict[str, Any]:
+    description = _trimmed(title) or "Selecione uma pasta para criar um topico"
+    workspace_root = get_project_workspace_root().resolve()
+
+    if os.name != "nt":
+        raise ValueError("Folder picker is only available on Windows in this build.")
+
+    try:
+        import tkinter as tk
+        from tkinter import filedialog
+    except Exception as exc:
+        raise ValueError(f"Failed to load Windows folder picker: {exc}") from exc
+
+    root = None
+    try:
+        root = tk.Tk()
+        root.withdraw()
+        root.attributes("-topmost", True)
+        root.update_idletasks()
+        selected_path = _trimmed(
+            filedialog.askdirectory(
+                parent=root,
+                title=description,
+                initialdir=str(workspace_root),
+                mustexist=True,
+            )
+        )
+    except Exception as exc:
+        raise ValueError(f"Failed to open folder picker: {exc}") from exc
+    finally:
+        try:
+            if root is not None:
+                root.destroy()
+        except Exception:
+            pass
+
+    return {
+        "path": selected_path,
+        "cancelled": not bool(selected_path),
+    }
+
+
+def complete_terminal_command(command: str) -> dict[str, Any]:
+    raw_command = command if isinstance(command, str) else ""
+    workspace_root = get_project_workspace_root().resolve()
+    payload = load_terminal_history_payload()
+    current_cwd = Path(payload.get("cwd") or str(workspace_root)).expanduser().resolve()
+    if not current_cwd.exists() or not current_cwd.is_dir():
+        current_cwd = workspace_root
+
+    if _has_active_interactive_terminal_session(current_cwd):
+        return {
+            "cwd": str(current_cwd),
+            "replacement_index": 0,
+            "replacement_length": 0,
+            "matches": [],
+        }
+
+    if os.name == "nt":
+        script = "\n".join(
+            [
+                "$ErrorActionPreference = 'SilentlyContinue'",
+                f"Set-Location -LiteralPath {json.dumps(str(current_cwd))}",
+                f"$__openclaude_input = {json.dumps(raw_command)}",
+                "$__openclaude_cursor = $__openclaude_input.Length",
+                "$__openclaude_result = TabExpansion2 -inputScript $__openclaude_input -cursorColumn $__openclaude_cursor",
+                "$__openclaude_matches = @($__openclaude_result.CompletionMatches | ForEach-Object { $_.CompletionText } | Select-Object -Unique)",
+                "$__openclaude_payload = @{",
+                "  cwd = (Get-Location).Path",
+                "  replacement_index = $__openclaude_result.ReplacementIndex",
+                "  replacement_length = $__openclaude_result.ReplacementLength",
+                "  matches = $__openclaude_matches",
+                "}",
+                "[Console]::Out.Write(($__openclaude_payload | ConvertTo-Json -Compress -Depth 4))",
+            ]
+        )
+        completed = subprocess.run(
+            [
+                "powershell.exe",
+                "-NoLogo",
+                "-NoProfile",
+                "-WindowStyle",
+                "Hidden",
+                "-Command",
+                script,
+            ],
+            cwd=str(current_cwd),
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=20,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+        if completed.returncode != 0:
+            return {
+                "cwd": str(current_cwd),
+                "replacement_index": 0,
+                "replacement_length": 0,
+                "matches": [],
+            }
+        try:
+            data = json.loads(completed.stdout or "{}")
+        except json.JSONDecodeError:
+            data = {}
+        matches = data.get("matches")
+        return {
+            "cwd": _trimmed(data.get("cwd")) or str(current_cwd),
+            "replacement_index": int(data.get("replacement_index") or 0),
+            "replacement_length": int(data.get("replacement_length") or 0),
+            "matches": [str(item) for item in matches] if isinstance(matches, list) else [],
+        }
+
+    shell = os.getenv("SHELL") or "/bin/bash"
+    escaped = raw_command.replace("'", "'\"'\"'")
+    completed = subprocess.run(
+        [
+            shell,
+            "-lc",
+            f"cd {json.dumps(str(current_cwd))} && compgen -cdfa -- '{escaped}' | head -50",
+        ],
+        cwd=str(current_cwd),
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=20,
+    )
+    matches = [line.strip() for line in (completed.stdout or "").splitlines() if line.strip()]
+    return {
+        "cwd": str(current_cwd),
+        "replacement_index": 0,
+        "replacement_length": len(raw_command),
+        "matches": matches,
+    }
+
+
+def get_terminal_snapshot() -> dict[str, Any]:
+    session = _get_active_terminal_session()
+    if session is not None:
+        _flush_terminal_shell_output(session)
+    payload = load_terminal_history_payload()
+    return {
+        "cwd": payload["cwd"],
+        "shell": "PowerShell" if os.name == "nt" else (os.getenv("SHELL") or "sh"),
+        "entries": payload["entries"],
+        "interactive": bool(session and session.command),
+        "active_command": session.command if session and session.command else None,
+    }
+
+
+def resize_terminal(cols: int, rows: int) -> dict[str, Any]:
+    if cols < 20 or rows < 5:
+        return get_terminal_snapshot()
+
+    session = _get_active_terminal_session()
+    if session is None or not session.command:
+        return get_terminal_snapshot()
+
+    try:
+        session.process.setwinsize(rows, cols)
+    except Exception as exc:
+        raise ValueError(f"Failed to resize terminal session: {exc}") from exc
+
+    return get_terminal_snapshot()
+
+
+def send_terminal_input(data: str) -> dict[str, Any]:
+    raw_data = data if isinstance(data, str) else ""
+    if raw_data == "":
+        raise ValueError("data is required.")
+
+    session = _get_active_terminal_session()
+    if session is None or not session.command:
+        raise ValueError("No interactive terminal session is active.")
+
+    try:
+        session.process.write(raw_data)
+    except Exception as exc:
+        _close_interactive_terminal_session()
+        raise ValueError(f"Failed to write to terminal session: {exc}") from exc
+
+    _flush_terminal_shell_output(
+        session,
+        max_wait_seconds=0.45 if ("\r" in raw_data or "\n" in raw_data) else 0.12,
+        min_wait_seconds=0.0,
+    )
+    return get_terminal_snapshot()
+
+
+def _is_interactive_terminal_command(command: str) -> bool:
+    normalized = (_trimmed(command) or "").lower()
+    if not normalized:
+        return False
+
+    interactive_commands = (
+        "openclaude",
+        "claude",
+        "powershell",
+        "powershell.exe",
+        "pwsh",
+        "pwsh.exe",
+        "cmd",
+        "cmd.exe",
+        "vim",
+        "nvim",
+        "nano",
+        "less",
+        "more",
+        "top",
+        "htop",
+    )
+    if normalized in interactive_commands:
+        return True
+    return normalized.startswith(tuple(f"{entry} " for entry in interactive_commands))
+
+
+def _run_interactive_terminal_command(command: str, cwd: Path) -> tuple[Path, str, int, bool]:
+    global _INTERACTIVE_TERMINAL_SESSION
+
+    session = _INTERACTIVE_TERMINAL_SESSION
+    spawned_now = False
+    if session and (not session.process.isalive() or session.cwd != cwd):
+        _close_interactive_terminal_session()
+        session = None
+
+    if session is None:
+        session = _spawn_interactive_terminal_session(command, cwd)
+        _INTERACTIVE_TERMINAL_SESSION = session
+        spawned_now = True
+    else:
+        session.process.write(command + "\r\n")
+
+    output = _collect_interactive_terminal_output(
+        session,
+        max_wait_seconds=10.0 if spawned_now else 4.0,
+        min_wait_seconds=6.0 if spawned_now else 0.0,
+    )
+    next_cwd = _extract_prompt_cwd_from_output(output) or cwd
+    is_alive = bool(session.process.isalive())
+    exit_code = 0 if is_alive else int(getattr(session.process, "exitstatus", 0) or 0)
+
+    if not is_alive:
+        _close_interactive_terminal_session()
+
+    return next_cwd, output, exit_code, exit_code == 0 or is_alive
+
+
+def _has_active_interactive_terminal_session(cwd: Path | None = None) -> bool:
+    session = _INTERACTIVE_TERMINAL_SESSION
+    if not session:
+        return False
+    if not session.process.isalive():
+        return False
+    if cwd is not None and session.cwd != cwd:
+        return False
+    return True
+
+
+def run_terminal_command(command: str) -> dict[str, Any]:
+    global _INTERACTIVE_TERMINAL_SESSION
+
+    normalized_command = _trimmed(command)
+    if not normalized_command:
+        raise ValueError("command is required.")
+
+    current_cwd = _resolve_terminal_cwd()
+
+    executed_at = datetime.now(timezone.utc).isoformat()
+
+    if _should_use_interactive_terminal_session(normalized_command):
+        _close_interactive_terminal_session()
+        direct_session = _spawn_interactive_terminal_session(
+            normalized_command, current_cwd
+        )
+        _INTERACTIVE_TERMINAL_SESSION = direct_session
+        _append_terminal_entries(
+            {
+                "id": str(uuid.uuid4()),
+                "kind": "command",
+                "text": f"PS {current_cwd}> {normalized_command}",
+                "created_at": executed_at,
+            },
+            cwd=current_cwd,
+        )
+        _flush_terminal_shell_output(
+            direct_session,
+            max_wait_seconds=3.5,
+            min_wait_seconds=0.5,
+        )
+        snapshot = get_terminal_snapshot()
+        snapshot["last_exit_code"] = 0
+        snapshot["success"] = True
+        return snapshot
+
+    if _has_active_interactive_terminal_session(current_cwd):
+        snapshot = send_terminal_input(normalized_command + "\r")
+        snapshot["last_exit_code"] = 0
+        snapshot["success"] = True
+        return snapshot
+
+    if os.name == "nt":
+        cwd_marker = f"__OPENCLAUDE_CWD__{uuid.uuid4().hex}__"
+        script = "\n".join(
+            [
+                "$ErrorActionPreference = 'Continue'",
+                f"Set-Location -LiteralPath {json.dumps(str(current_cwd))}",
+                f"$__openclaude_command = {json.dumps(normalized_command)}",
+                "Invoke-Expression $__openclaude_command",
+                f"[Console]::Out.WriteLine('{cwd_marker}' + (Get-Location).Path)",
+            ]
+        )
+        invocation = [
+            "powershell.exe",
+            "-NoLogo",
+            "-NoProfile",
+            "-Command",
+            script,
+        ]
+        prompt = f"PS {current_cwd}> {normalized_command}"
+    else:
+        shell = os.getenv("SHELL") or "/bin/bash"
+        cwd_marker = f"__OPENCLAUDE_CWD__{uuid.uuid4().hex}__"
+        invocation = [
+            shell,
+            "-lc",
+            f"cd {json.dumps(str(current_cwd))} && {normalized_command}; printf '\\n{cwd_marker}%s' \"$PWD\"",
+        ]
+        prompt = f"$ {normalized_command}"
+
+    completed = subprocess.run(
+        invocation,
+        cwd=str(current_cwd),
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=120,
+    )
+
+    stdout_text = completed.stdout or ""
+    stderr_text = completed.stderr or ""
+    next_cwd = current_cwd
+    stdout_lines = stdout_text.splitlines()
+    cleaned_stdout_lines: list[str] = []
+    for line in stdout_lines:
+        if line.startswith(cwd_marker):
+            candidate = _trimmed(line[len(cwd_marker) :])
+            if candidate:
+                candidate_path = Path(candidate).expanduser().resolve()
+                if candidate_path.exists() and candidate_path.is_dir():
+                    next_cwd = candidate_path
+            continue
+        cleaned_stdout_lines.append(line)
+
+    output = "\n".join(cleaned_stdout_lines).strip()
+    if stderr_text.strip():
+        output = f"{output}\n{stderr_text.strip()}".strip()
+    trimmed_output = output.strip() or "(no output)"
+    if len(trimmed_output) > MAX_TERMINAL_OUTPUT_CHARS:
+        trimmed_output = trimmed_output[:MAX_TERMINAL_OUTPUT_CHARS].rstrip() + "\n... output truncated"
+
+    normalized_lower = normalized_command.lower()
+    navigation_command = normalized_lower.startswith("cd") or normalized_lower.startswith("set-location") or normalized_lower.startswith("sl ")
+    clear_command = normalized_lower in {"cls", "clear", "clear-host"}
+
+    if clear_command:
+        save_terminal_history_payload({"entries": [], "cwd": str(next_cwd)})
+        snapshot = get_terminal_snapshot()
+        snapshot["last_exit_code"] = completed.returncode
+        snapshot["success"] = completed.returncode == 0
+        return snapshot
+
+    entries = [
+        {
+            "id": str(uuid.uuid4()),
+            "kind": "command",
+            "text": prompt,
+            "created_at": executed_at,
+        }
+    ]
+    if not (navigation_command and trimmed_output == "(no output)"):
+        entries.append(
+            {
+                "id": str(uuid.uuid4()),
+                "kind": "output",
+                "text": trimmed_output,
+                "created_at": datetime.now(timezone.utc).isoformat(),
+                "exit_code": completed.returncode,
+                "success": completed.returncode == 0,
+            }
+        )
+
+    _append_terminal_entries(
+        *entries,
+        cwd=next_cwd,
+    )
+
+    snapshot = get_terminal_snapshot()
+    snapshot["last_exit_code"] = completed.returncode
+    snapshot["success"] = completed.returncode == 0
+    return snapshot
+
+
+def get_git_overview() -> dict[str, Any]:
+    workspace = _build_workspace_context(max_changed_files=MAX_FULL_CHANGED_FILES)
+    gh_available = _command_exists("gh")
+    return {
+        "workspace": workspace,
+        "summary": {
+            "changed_file_count": workspace.get("changed_file_count", 0),
+            "total_insertions": workspace.get("total_insertions", 0),
+            "total_deletions": workspace.get("total_deletions", 0),
+            "staged_file_count": workspace.get("staged_file_count", 0),
+            "unstaged_file_count": workspace.get("unstaged_file_count", 0),
+            "untracked_file_count": workspace.get("untracked_file_count", 0),
+        },
+        "actions": {
+            "can_commit": bool(workspace.get("is_git_repo")) and int(workspace.get("changed_file_count", 0)) > 0,
+            "can_push": bool(workspace.get("is_git_repo")) and bool(workspace.get("branch")) and bool(workspace.get("origin_url")),
+            "can_create_pr": gh_available and bool(workspace.get("branch")) and bool(workspace.get("origin_url")),
+            "gh_available": gh_available,
+        },
+    }
+
+
+def _run_git_checked(args: list[str], *, cwd: Path) -> str:
+    completed = subprocess.run(
+        ["git", *args],
+        cwd=str(cwd),
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+    if completed.returncode != 0:
+        raise ValueError(completed.stderr.strip() or completed.stdout.strip() or f"git {' '.join(args)} failed.")
+    return completed.stdout.strip()
+
+
+def _default_commit_message(repo_root: Path) -> str:
+    changed = _run_git(["diff", "--cached", "--name-only"], cwd=repo_root) or ""
+    files = [line.strip() for line in changed.splitlines() if line.strip()]
+    if len(files) == 1:
+        return f"Update {files[0]}"
+    if len(files) > 1:
+        return f"Update {len(files)} files"
+    return "Update workspace changes"
+
+
+def _default_pr_base(context: dict[str, Any]) -> str | None:
+    upstream = _trimmed(context.get("upstream"))
+    if not upstream:
+        return "main"
+    if "/" in upstream:
+        return upstream.split("/", 1)[1]
+    return upstream
+
+
+def _push_current_branch(repo_root: Path, context: dict[str, Any]) -> dict[str, Any]:
+    branch = _trimmed(context.get("branch"))
+    if not branch:
+        raise ValueError("No current branch is available to push.")
+
+    upstream = _trimmed(context.get("upstream"))
+    if upstream:
+        _run_git_checked(["push"], cwd=repo_root)
+    else:
+        _run_git_checked(["push", "-u", "origin", branch], cwd=repo_root)
+
+    refreshed = get_workspace_context()
+    return {
+        "branch": refreshed.get("branch"),
+        "upstream": refreshed.get("upstream"),
+    }
+
+
+def _create_pull_request(repo_root: Path, title: str, draft: bool, context: dict[str, Any]) -> dict[str, Any]:
+    if not _command_exists("gh"):
+        raise ValueError("GitHub CLI is not available on this machine.")
+
+    base_branch = _default_pr_base(context)
+    command = ["gh", "pr", "create", "--title", title, "--body", ""]
+    if base_branch:
+        command.extend(["--base", base_branch])
+    if draft:
+        command.append("--draft")
+
+    completed = subprocess.run(
+        command,
+        cwd=str(repo_root),
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+    if completed.returncode != 0:
+        raise ValueError(completed.stderr.strip() or completed.stdout.strip() or "Failed to create pull request.")
+
+    return {
+        "url": completed.stdout.strip() or None,
+        "draft": draft,
+        "base": base_branch,
+    }
+
+
+def commit_git_changes(
+    message: str | None = None,
+    *,
+    include_untracked: bool = True,
+    action: str = "commit",
+    draft: bool = False,
+) -> dict[str, Any]:
+    normalized_action = _trimmed(action) or "commit"
+    allowed_actions = {"commit", "commit_and_push", "commit_and_create_pr"}
+    if normalized_action not in allowed_actions:
+        raise ValueError(f"Unsupported commit action: {normalized_action}")
+
+    context = get_workspace_context()
+    repo_root = Path(context.get("project_root") or get_project_workspace_root()).resolve()
+    if not context.get("is_git_repo"):
+        raise ValueError("Current workspace is not a git repository.")
+    if int(context.get("changed_file_count", 0)) == 0:
+        raise ValueError("There are no local changes to commit.")
+
+    _run_git_checked(["add", "-A" if include_untracked else "-u"], cwd=repo_root)
+    staged_diff = _run_git(["diff", "--cached", "--name-only"], cwd=repo_root)
+    if not staged_diff:
+        raise ValueError("There are no staged changes to commit.")
+
+    commit_message = _trimmed(message) or _default_commit_message(repo_root)
+    _run_git_checked(["commit", "-m", commit_message], cwd=repo_root)
+
+    push_result = None
+    pr_result = None
+    refreshed_context = get_workspace_context()
+
+    if normalized_action in {"commit_and_push", "commit_and_create_pr"}:
+        push_result = _push_current_branch(repo_root, refreshed_context)
+        refreshed_context = get_workspace_context()
+
+    if normalized_action == "commit_and_create_pr":
+        pr_result = _create_pull_request(repo_root, commit_message, draft, refreshed_context)
+        refreshed_context = get_workspace_context()
+
+    return {
+        "commit_message": commit_message,
+        "push": push_result,
+        "pull_request": pr_result,
+        "workspace": refreshed_context,
+        "branches": list_git_branches(),
+        "topic": resolve_workspace_topic(create_if_missing=True),
+        "topics": list_topics(),
+        "git": get_git_overview(),
+    }
 
 
 def _probe_ollama(base_url: str) -> tuple[bool, list[str]]:
@@ -1615,7 +2998,7 @@ def workspace_status() -> dict[str, Any]:
     workspace = get_workspace_context()
     topics = list_topics()
     return {
-        "workspace_root": str(WORKSPACE_ROOT),
+        "workspace_root": str(get_project_workspace_root()),
         "agno_state_dir": str(AGNO_STATE_DIR),
         "agentos_db": str(AGNO_DB_PATH),
         "openclaude_built": OPENCLAUDE_DIST_PATH.exists(),

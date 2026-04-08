@@ -11,6 +11,7 @@ import { ToolCall } from '@/types/os'
 import { useQueryState } from 'nuqs'
 import { getJsonMarkdown } from '@/lib/utils'
 import useWorkspaceData from './useWorkspaceData'
+import { WorkspaceContext } from '@/types/integration'
 
 const useAIChatStreamHandler = () => {
   const setMessages = useStore((state) => state.setMessages)
@@ -40,6 +41,22 @@ const useAIChatStreamHandler = () => {
       return newMessages
     })
   }, [setMessages])
+
+  const attachWorkspaceSnapshot = useCallback(
+    (workspaceSnapshot: WorkspaceContext | null) => {
+      if (!workspaceSnapshot) return
+
+      setMessages((prevMessages) => {
+        const newMessages = [...prevMessages]
+        const lastMessage = newMessages[newMessages.length - 1]
+        if (lastMessage && lastMessage.role === 'agent') {
+          lastMessage.workspace_snapshot = workspaceSnapshot
+        }
+        return newMessages
+      })
+    },
+    [setMessages]
+  )
 
   /**
    * Processes a new tool call and adds it to the message
@@ -343,7 +360,7 @@ const useAIChatStreamHandler = () => {
               chunk.event === RunEvent.TeamRunCancelled
             ) {
               updateMessagesWithErrorState()
-              void refreshWorkspaceContext()
+              void refreshWorkspaceContext().then(attachWorkspaceSnapshot)
               const errorContent =
                 (chunk.content as string) ||
                 (chunk.event === RunEvent.TeamRunCancelled
@@ -368,7 +385,7 @@ const useAIChatStreamHandler = () => {
               chunk.event === RunEvent.RunCompleted ||
               chunk.event === RunEvent.TeamRunCompleted
             ) {
-              void refreshWorkspaceContext()
+              void refreshWorkspaceContext().then(attachWorkspaceSnapshot)
               setMessages((prevMessages) => {
                 const newMessages = prevMessages.map((message, index) => {
                   if (
@@ -414,7 +431,7 @@ const useAIChatStreamHandler = () => {
           },
           onError: (error) => {
             updateMessagesWithErrorState()
-            void refreshWorkspaceContext()
+            void refreshWorkspaceContext().then(attachWorkspaceSnapshot)
             setStreamingErrorMessage(error.message)
             if (newSessionId) {
               setSessionsData(
@@ -464,7 +481,8 @@ const useAIChatStreamHandler = () => {
       setSessionId,
       processChunkToolCalls,
       assignSessionToTopic,
-      refreshWorkspaceContext
+      refreshWorkspaceContext,
+      attachWorkspaceSnapshot
     ]
   )
 

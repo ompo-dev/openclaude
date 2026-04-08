@@ -1,17 +1,16 @@
 'use client'
 
 import { useEffect, useMemo, useState } from 'react'
+import { ArrowUp, Mic } from 'lucide-react'
 import { toast } from 'sonner'
 import { useQueryState } from 'nuqs'
 
 import { getSlashCatalogAPI } from '@/api/integration'
-import { TextArea } from '@/components/ui/textarea'
-import { Button } from '@/components/ui/button'
-import Icon from '@/components/ui/icon'
 import useAIChatStreamHandler from '@/hooks/useAIStreamHandler'
 import useChatActions from '@/hooks/useChatActions'
 import { useStore } from '@/store'
 import { SlashCatalogEntry, SlashCatalogSnapshot } from '@/types/integration'
+import ChatComposerBar from './ChatComposerBar'
 
 const MAX_VISIBLE_COMMANDS = 8
 
@@ -21,7 +20,11 @@ const buildCatalogMessage = (
   emptyState: string
 ) =>
   entries.length > 0
-    ? [`## ${title}`, '', ...entries.map((entry) => `- \`${entry.slash}\` ${entry.description}`)].join('\n')
+    ? [
+        `## ${title}`,
+        '',
+        ...entries.map((entry) => `- \`${entry.slash}\` ${entry.description}`)
+      ].join('\n')
     : emptyState
 
 const ChatInput = () => {
@@ -38,9 +41,22 @@ const ChatInput = () => {
   const isStreaming = useStore((state) => state.isStreaming)
 
   useEffect(() => {
+    if (!chatInputRef.current) return
+
+    chatInputRef.current.style.height = 'auto'
+    chatInputRef.current.style.height = `${Math.min(
+      chatInputRef.current.scrollHeight,
+      180
+    )}px`
+  }, [chatInputRef, inputMessage])
+
+  useEffect(() => {
     void (async () => {
       try {
-        const nextCatalog = await getSlashCatalogAPI(selectedEndpoint, authToken)
+        const nextCatalog = await getSlashCatalogAPI(
+          selectedEndpoint,
+          authToken
+        )
         setSlashCatalog(nextCatalog)
       } catch {
         setSlashCatalog(null)
@@ -60,7 +76,9 @@ const ChatInput = () => {
         if (!slashQuery) return true
         return (
           entry.name.toLowerCase().includes(slashQuery) ||
-          entry.aliases.some((alias) => alias.toLowerCase().includes(slashQuery)) ||
+          entry.aliases.some((alias) =>
+            alias.toLowerCase().includes(slashQuery)
+          ) ||
           entry.description.toLowerCase().includes(slashQuery)
         )
       })
@@ -154,7 +172,10 @@ const ChatInput = () => {
 
     if (normalized.startsWith('/')) {
       const slashName = normalized.slice(1).split(/\s+/, 1)[0]
-      const knownEntry = [...slashCatalog.commands, ...slashCatalog.skills].find(
+      const knownEntry = [
+        ...slashCatalog.commands,
+        ...slashCatalog.skills
+      ].find(
         (entry) =>
           entry.name.toLowerCase() === slashName ||
           entry.aliases.some((alias) => alias.toLowerCase() === slashName)
@@ -189,114 +210,150 @@ const ChatInput = () => {
   }
 
   return (
-    <div className="relative mx-auto mb-1 flex w-full max-w-2xl items-end justify-center gap-x-2 font-geist">
-      {slashTokenMatch && (filteredSlashEntries.length > 0 || filteredPlugins.length > 0) ? (
-        <div className="absolute inset-x-0 bottom-full mb-3 overflow-hidden rounded-2xl border border-primary/10 bg-background shadow-[0_18px_50px_rgba(0,0,0,0.45)]">
-          <div className="border-b border-primary/10 px-4 py-3 text-[11px] uppercase text-muted">
-            Slash Catalog
-          </div>
-          <div className="max-h-80 overflow-y-auto p-2">
-            {filteredSlashEntries.map((entry, index) => (
-              <button
-                key={entry.id}
-                type="button"
-                onClick={() => handleSelectSlashEntry(entry)}
-                className={`flex w-full items-start justify-between rounded-xl px-3 py-2 text-left transition-colors ${
-                  index === activeSlashIndex
-                    ? 'bg-primary/10'
-                    : 'hover:bg-background-secondary'
-                }`}
-              >
-                <div>
-                  <div className="text-sm font-medium text-secondary">
-                    {entry.slash}
-                  </div>
-                  <div className="text-xs text-muted">{entry.description}</div>
-                </div>
-                <div className="text-[10px] uppercase text-muted">
-                  {entry.kind}
-                </div>
-              </button>
-            ))}
-            {filteredPlugins.length > 0 ? (
-              <div className="mt-2 border-t border-primary/10 px-3 pt-3">
-                <div className="mb-2 text-[11px] uppercase text-muted">
-                  Plugins
-                </div>
-                <div className="flex flex-wrap gap-2">
-                  {filteredPlugins.map((plugin) => (
-                    <span
-                      key={plugin.id}
-                      className="rounded-full border border-primary/10 bg-background-secondary px-3 py-1 text-[11px] uppercase text-secondary"
-                    >
-                      {plugin.name}
-                    </span>
-                  ))}
-                </div>
+    <div className="bg-background border-t border-[#232327]">
+      <div className="mx-auto max-w-3xl p-4">
+        <div className="relative rounded-[28px] border border-[#2a2a30] bg-[#17171a] px-5 pb-3 pt-4 shadow-[0_16px_40px_rgba(0,0,0,0.28)]">
+          {slashTokenMatch &&
+          (filteredSlashEntries.length > 0 || filteredPlugins.length > 0) ? (
+            <div className="absolute inset-x-0 bottom-full z-20 mb-3 overflow-hidden rounded-3xl border border-[#2d2d33] bg-[#151518] shadow-[0_18px_50px_rgba(0,0,0,0.45)]">
+              <div className="border-b border-[#242429] px-4 py-2 text-[11px] uppercase text-[#7f7f88]">
+                Slash Catalog
               </div>
-            ) : null}
+              <div className="max-h-72 overflow-y-auto p-1.5">
+                {filteredSlashEntries.map((entry, index) => (
+                  <button
+                    key={entry.id}
+                    type="button"
+                    onClick={() => handleSelectSlashEntry(entry)}
+                    className={`flex w-full items-start justify-between rounded-2xl px-3 py-2 text-left text-xs transition-colors ${
+                      index === activeSlashIndex
+                        ? 'bg-white/6 text-white'
+                        : 'hover:bg-white/6 text-[#b7b7bf] hover:text-white'
+                    }`}
+                  >
+                    <div>
+                      <div className="font-medium text-[#f5f5f7]">
+                        {entry.slash}
+                      </div>
+                      <div className="mt-1 text-[#8f8f96]">
+                        {entry.description}
+                      </div>
+                    </div>
+                    <div className="text-[10px] uppercase text-[#8f8f96]">
+                      {entry.kind}
+                    </div>
+                  </button>
+                ))}
+                {filteredPlugins.length > 0 ? (
+                  <div className="mt-1 border-t border-[#242429] px-3 py-2">
+                    <div className="mb-2 text-[11px] uppercase text-[#7f7f88]">
+                      Plugins
+                    </div>
+                    <div className="flex flex-wrap gap-2">
+                      {filteredPlugins.map((plugin) => (
+                        <span
+                          key={plugin.id}
+                          className="rounded-full border border-[#2d2d33] px-2.5 py-1 text-[11px] text-[#d1d1d6]"
+                        >
+                          {plugin.name}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                ) : null}
+              </div>
+            </div>
+          ) : null}
+
+          <textarea
+            ref={chatInputRef}
+            value={inputMessage}
+            onChange={(event) => setInputMessage(event.target.value)}
+            onKeyDown={(event) => {
+              if (slashTokenMatch && filteredSlashEntries.length > 0) {
+                if (event.key === 'ArrowDown') {
+                  event.preventDefault()
+                  setActiveSlashIndex((current) =>
+                    current === filteredSlashEntries.length - 1
+                      ? 0
+                      : current + 1
+                  )
+                  return
+                }
+
+                if (event.key === 'ArrowUp') {
+                  event.preventDefault()
+                  setActiveSlashIndex((current) =>
+                    current === 0
+                      ? filteredSlashEntries.length - 1
+                      : current - 1
+                  )
+                  return
+                }
+
+                if (
+                  (event.key === 'Enter' || event.key === 'Tab') &&
+                  !event.shiftKey
+                ) {
+                  event.preventDefault()
+                  handleSelectSlashEntry(
+                    filteredSlashEntries[activeSlashIndex]!
+                  )
+                  return
+                }
+
+                if (event.key === 'Escape') {
+                  event.preventDefault()
+                  setInputMessage('')
+                  return
+                }
+              }
+
+              if (
+                event.key === 'Enter' &&
+                !event.nativeEvent.isComposing &&
+                !event.shiftKey &&
+                !isStreaming
+              ) {
+                event.preventDefault()
+                void handleSubmit()
+              }
+            }}
+            placeholder="Pergunte algo ou digite / para skills"
+            className="h-fit w-full resize-none bg-transparent text-[14px] leading-6 text-[#f3f3f5] placeholder:text-[#8d8d95] focus:outline-none"
+            rows={1}
+            disabled={!(selectedAgent || teamId) || isStreaming}
+          />
+
+          <div className="mt-3 flex items-center justify-between border-t border-[#26262c] pt-3">
+            <ChatComposerBar />
+
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                className="flex h-8 w-8 items-center justify-center rounded-full text-[#9e9ea7] transition-colors hover:bg-white/5 hover:text-white"
+                title="Microfone"
+              >
+                <Mic className="h-3.5 w-3.5" />
+              </button>
+
+              <button
+                type="button"
+                onClick={() => void handleSubmit()}
+                disabled={
+                  !(selectedAgent || teamId) ||
+                  !inputMessage.trim() ||
+                  isStreaming
+                }
+                className="flex h-9 w-9 items-center justify-center rounded-full bg-[#f3f4f6] text-[#101012] transition hover:bg-white disabled:cursor-not-allowed disabled:opacity-40"
+                title="Enviar"
+              >
+                <ArrowUp className="h-4 w-4" />
+              </button>
+            </div>
           </div>
         </div>
-      ) : null}
-      <TextArea
-        placeholder={'Ask anything or type / for skills'}
-        value={inputMessage}
-        onChange={(e) => setInputMessage(e.target.value)}
-        onKeyDown={(e) => {
-          if (slashTokenMatch && filteredSlashEntries.length > 0) {
-            if (e.key === 'ArrowDown') {
-              e.preventDefault()
-              setActiveSlashIndex((current) =>
-                current === filteredSlashEntries.length - 1 ? 0 : current + 1
-              )
-              return
-            }
-
-            if (e.key === 'ArrowUp') {
-              e.preventDefault()
-              setActiveSlashIndex((current) =>
-                current === 0 ? filteredSlashEntries.length - 1 : current - 1
-              )
-              return
-            }
-
-            if ((e.key === 'Enter' || e.key === 'Tab') && !e.shiftKey) {
-              e.preventDefault()
-              handleSelectSlashEntry(filteredSlashEntries[activeSlashIndex]!)
-              return
-            }
-
-            if (e.key === 'Escape') {
-              e.preventDefault()
-              setInputMessage('')
-              return
-            }
-          }
-
-          if (
-            e.key === 'Enter' &&
-            !e.nativeEvent.isComposing &&
-            !e.shiftKey &&
-            !isStreaming
-          ) {
-            e.preventDefault()
-            void handleSubmit()
-          }
-        }}
-        className="w-full border border-accent bg-primaryAccent px-4 text-sm text-primary focus:border-accent"
-        disabled={!(selectedAgent || teamId)}
-        ref={chatInputRef}
-      />
-      <Button
-        onClick={() => void handleSubmit()}
-        disabled={
-          !(selectedAgent || teamId) || !inputMessage.trim() || isStreaming
-        }
-        size="icon"
-        className="rounded-xl bg-primary p-5 text-primaryAccent"
-      >
-        <Icon type="send" color="primaryAccent" />
-      </Button>
+      </div>
     </div>
   )
 }

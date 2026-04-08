@@ -1,5 +1,6 @@
 import net from 'node:net'
 import { spawn } from 'node:child_process'
+import { spawnSync } from 'node:child_process'
 import { existsSync } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -8,9 +9,13 @@ const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '
 const args = new Set(process.argv.slice(2))
 const requestedApiPort = Number(process.env.AGNO_PORT || '7777')
 const requestedUiPort = Number(process.env.AGNO_UI_PORT || '3000')
+const requestedTargetWorkspace = path.resolve(
+  process.env.OPENCLAUDE_TARGET_WORKSPACE || process.cwd()
+)
 const dryRun = args.has('--dry-run')
 const noBrowser = args.has('--no-browser')
 const jsonOutput = args.has('--json')
+const stopOnly = args.has('--stop')
 const host = '127.0.0.1'
 
 function hasWebWorkspace(rootDir) {
@@ -155,6 +160,53 @@ async function isPortFree(port, bindHost = host) {
   })
 }
 
+function cleanupWindowsStack() {
+  const launcherPattern = path.join(rootDir, 'scripts', 'start-agno.ps1')
+  const script = [
+    '$ErrorActionPreference = "SilentlyContinue"',
+    `$launcherPattern = ${toPowerShellString(launcherPattern)}`,
+    '$targets = Get-CimInstance Win32_Process | Where-Object {',
+    '  $_.ProcessId -ne $PID -and',
+    '  $_.CommandLine -and',
+    '  $_.CommandLine.Contains($launcherPattern) -and',
+    '  ($_.CommandLine.Contains("-ServerOnly") -or $_.CommandLine.Contains("-UiOnly"))',
+    '}',
+    '$pids = $targets | Select-Object -ExpandProperty ProcessId -Unique',
+    '$pids | ForEach-Object { taskkill.exe /PID $_ /T /F | Out-Null }',
+    'Start-Sleep -Milliseconds 1200',
+  ].join('; ')
+
+  spawnSync('powershell.exe', ['-NoLogo', '-NoProfile', '-Command', script], {
+    cwd: rootDir,
+    stdio: 'ignore',
+    windowsHide: true,
+  })
+}
+
+function cleanupUnixStack() {
+  const child = spawnSync(
+    'bash',
+    [
+      '-lc',
+      `pkill -f "${path.join(rootDir, 'python', 'agno_server.py')}" || true; pkill -f "apps/agent-ui" || true`,
+    ],
+    {
+      cwd: rootDir,
+      stdio: 'ignore',
+    }
+  )
+  return child.status === 0
+}
+
+function cleanupExistingStack() {
+  if (process.platform === 'win32') {
+    cleanupWindowsStack()
+    return
+  }
+
+  cleanupUnixStack()
+}
+
 async function findAvailablePort(preferredPort, bindHost = host, maxOffset = 20) {
   for (let offset = 0; offset <= maxOffset; offset += 1) {
     const candidate = preferredPort + offset
@@ -247,7 +299,25 @@ async function openBrowser(url) {
   child.unref()
 }
 
+function buildUiLaunchUrl(uiUrl, apiUrl) {
+  const launchUrl = new URL(uiUrl)
+  launchUrl.searchParams.set('workspace', requestedTargetWorkspace)
+  launchUrl.searchParams.set('endpoint', apiUrl)
+  return launchUrl.toString()
+}
+
 function formatResult(result) {
+  if (result.status === 'stopped') {
+    return [
+      'OpenClaude Web background stack stopped.',
+      `Workspace: ${result.workspaceRoot}`,
+      `Target workspace: ${result.targetWorkspace || requestedTargetWorkspace}`,
+      result.note,
+    ]
+      .filter(Boolean)
+      .join('\n')
+  }
+
   const lines = [
     result.status === 'already_running'
       ? 'OpenClaude Web is already running.'
@@ -255,6 +325,7 @@ function formatResult(result) {
         ? 'OpenClaude Web is starting in the background.'
         : 'OpenClaude Web failed to start.',
     `Workspace: ${result.workspaceRoot}`,
+    `Target workspace: ${result.targetWorkspace || requestedTargetWorkspace}`,
     `UI: ${result.uiUrl} (port ${result.uiPort})`,
     `API: ${result.apiUrl} (port ${result.apiPort})`,
     `Status: ${result.statusUrl}`,
@@ -293,30 +364,15 @@ function printResult(result) {
 }
 
 const logs = getLogPaths()
-const requestedUrls = buildUrls(requestedApiPort, requestedUiPort)
-const alreadyRunning =
-  (await isApiHealthy(requestedUrls.apiUrl, requestedUrls.uiUrl)) &&
-  (await isUiHealthy(requestedUrls.uiUrl))
+cleanupExistingStack()
 
-if (alreadyRunning) {
-  const result = {
-    status: 'already_running',
+if (stopOnly) {
+  printResult({
+    status: 'stopped',
     workspaceRoot: rootDir,
-    uiUrl: requestedUrls.uiUrl,
-    apiUrl: requestedUrls.apiUrl,
-    statusUrl: requestedUrls.statusUrl,
-    docsUrl: requestedUrls.docsUrl,
-    uiPort: requestedUiPort,
-    apiPort: requestedApiPort,
-    uiChanged: false,
-    apiChanged: false,
-    logs,
-  }
-
-  printResult(result)
-  if (!noBrowser) {
-    await openBrowser(result.uiUrl)
-  }
+    targetWorkspace: requestedTargetWorkspace,
+    note: 'OpenClaude Web background stack stopped.',
+  })
   process.exit(0)
 }
 
@@ -336,6 +392,7 @@ const env = {
   AGNO_PORT: String(apiPort),
   AGNO_UI_PORT: String(uiPort),
   OPENCLAUDE_WEB_WORKSPACE: rootDir,
+  OPENCLAUDE_TARGET_WORKSPACE: requestedTargetWorkspace,
 }
 
 try {
@@ -348,6 +405,7 @@ try {
   const result = {
     status: 'started',
     workspaceRoot: rootDir,
+    targetWorkspace: requestedTargetWorkspace,
     uiUrl: urls.uiUrl,
     apiUrl: urls.apiUrl,
     statusUrl: urls.statusUrl,
@@ -364,7 +422,7 @@ try {
 
   if (!noBrowser) {
     setTimeout(() => {
-      void openBrowser(result.uiUrl)
+      void openBrowser(buildUiLaunchUrl(result.uiUrl, result.apiUrl))
     }, 3000)
   }
 
@@ -373,6 +431,7 @@ try {
   const result = {
     status: 'failed',
     workspaceRoot: rootDir,
+    targetWorkspace: requestedTargetWorkspace,
     uiUrl: urls.uiUrl,
     apiUrl: urls.apiUrl,
     statusUrl: urls.statusUrl,

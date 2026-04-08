@@ -23,7 +23,7 @@ const useChatActions = () => {
   const [agentId, setAgentId] = useQueryState('agent')
   const [teamId, setTeamId] = useQueryState('team')
   const [, setDbId] = useQueryState('db_id')
-  const { refreshWorkspaceContext, refreshTopics, clearWorkspaceData } =
+  const { bootstrapWorkspace, clearWorkspaceData } =
     useWorkspaceData()
 
   const getStatus = useCallback(async () => {
@@ -83,7 +83,7 @@ const useChatActions = () => {
       let teams: TeamDetails[] = []
       if (status === 200) {
         setIsEndpointActive(true)
-        await Promise.all([refreshWorkspaceContext(), refreshTopics()])
+        await bootstrapWorkspace()
         teams = await getTeams()
         agents = await getAgents()
 
@@ -177,8 +177,7 @@ const useChatActions = () => {
     setMode,
     setTeamId,
     setDbId,
-    refreshWorkspaceContext,
-    refreshTopics,
+    bootstrapWorkspace,
     clearWorkspaceData,
     agentId,
     teamId

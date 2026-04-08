@@ -2,6 +2,7 @@
 
 import * as React from 'react'
 import * as SelectPrimitive from '@radix-ui/react-select'
+import { cva, type VariantProps } from 'class-variance-authority'
 
 import { cn } from '@/lib/utils'
 import Icon from './icon'
@@ -12,22 +13,75 @@ const SelectGroup = SelectPrimitive.Group
 
 const SelectValue = SelectPrimitive.Value
 
+const selectTriggerVariants = cva(
+  'flex w-full items-center justify-between whitespace-nowrap rounded-lg border px-3 py-2.5 text-sm outline-none transition-colors data-[placeholder]:text-muted disabled:cursor-not-allowed disabled:opacity-50 [&>span]:line-clamp-1',
+  {
+    variants: {
+      variant: {
+        default:
+          'border-[#30363d] bg-[#161b22] text-[#e6edf3] focus:border-[#1f6feb] focus:bg-[#161b22]',
+        codex:
+          'border-[#30363d] bg-[#161b22] text-[#e6edf3] hover:border-[#3d444d] hover:bg-[#21262d] focus:border-[#1f6feb] focus:bg-[#161b22]'
+      }
+    },
+    defaultVariants: {
+      variant: 'default'
+    }
+  }
+)
+
+const selectContentVariants = cva(
+  'relative z-50 max-h-96 min-w-[10rem] overflow-hidden rounded-lg border text-secondary shadow-[0_18px_50px_rgba(0,0,0,0.45)] data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 data-[side=bottom]:slide-in-from-top-2 data-[side=left]:slide-in-from-right-2 data-[side=right]:slide-in-from-left-2 data-[side=top]:slide-in-from-bottom-2',
+  {
+    variants: {
+      variant: {
+        default: 'border-[#30363d] bg-[#161b22]',
+        codex: 'border-[#30363d] bg-[#161b22]'
+      }
+    },
+    defaultVariants: {
+      variant: 'default'
+    }
+  }
+)
+
+const selectItemVariants = cva(
+  'relative flex w-full cursor-default select-none items-center rounded-md px-3 py-2.5 text-sm outline-none transition-colors data-[disabled]:pointer-events-none data-[disabled]:opacity-50',
+  {
+    variants: {
+      variant: {
+        default:
+          'text-[#e6edf3] focus:bg-[#21262d] focus:text-[#e6edf3] data-[state=checked]:bg-[#0f1a2b] data-[state=checked]:text-[#58a6ff]',
+        codex:
+          'text-[#e6edf3] focus:bg-[#21262d] focus:text-[#e6edf3] data-[state=checked]:bg-[#0f1a2b] data-[state=checked]:text-[#58a6ff]'
+      }
+    },
+    defaultVariants: {
+      variant: 'default'
+    }
+  }
+)
+
 const SelectTrigger = React.forwardRef<
   React.ElementRef<typeof SelectPrimitive.Trigger>,
-  React.ComponentPropsWithoutRef<typeof SelectPrimitive.Trigger>
->(({ className, children, ...props }, ref) => (
+  React.ComponentPropsWithoutRef<typeof SelectPrimitive.Trigger> &
+    VariantProps<typeof selectTriggerVariants>
+>(({ className, children, variant, ...props }, ref) => (
   <SelectPrimitive.Trigger
     ref={ref}
     className={cn(
-      'flex w-full items-center justify-between whitespace-nowrap rounded-xl border border-primary/15 bg-background-secondary px-3 py-2.5 text-sm text-secondary outline-none transition-colors data-[placeholder]:text-muted disabled:cursor-not-allowed disabled:opacity-50 [&>span]:line-clamp-1',
-      'focus:border-primary/40 focus:bg-primaryAccent',
+      selectTriggerVariants({ variant }),
       className
     )}
     {...props}
   >
     {children}
     <SelectPrimitive.Icon asChild>
-      <Icon type="chevron-down" size="xs" className="text-muted" />
+      <Icon
+        type="chevron-down"
+        size="xs"
+        className={cn(variant === 'codex' ? 'text-[#9b9ba3]' : 'text-muted')}
+      />
     </SelectPrimitive.Icon>
   </SelectPrimitive.Trigger>
 ))
@@ -70,13 +124,14 @@ SelectScrollDownButton.displayName =
 
 const SelectContent = React.forwardRef<
   React.ElementRef<typeof SelectPrimitive.Content>,
-  React.ComponentPropsWithoutRef<typeof SelectPrimitive.Content>
->(({ className, children, position = 'popper', ...props }, ref) => (
+  React.ComponentPropsWithoutRef<typeof SelectPrimitive.Content> &
+    VariantProps<typeof selectContentVariants>
+>(({ className, children, position = 'popper', variant, ...props }, ref) => (
   <SelectPrimitive.Portal>
     <SelectPrimitive.Content
       ref={ref}
       className={cn(
-        'relative z-50 max-h-96 min-w-[10rem] overflow-hidden rounded-xl border border-primary/15 bg-background text-secondary shadow-[0_18px_50px_rgba(0,0,0,0.45)] data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 data-[side=bottom]:slide-in-from-top-2 data-[side=left]:slide-in-from-right-2 data-[side=right]:slide-in-from-left-2 data-[side=top]:slide-in-from-bottom-2',
+        selectContentVariants({ variant }),
         position === 'popper' &&
           'data-[side=bottom]:translate-y-1 data-[side=left]:-translate-x-1 data-[side=right]:translate-x-1 data-[side=top]:-translate-y-1',
         className
@@ -114,13 +169,13 @@ SelectLabel.displayName = SelectPrimitive.Label.displayName
 
 const SelectItem = React.forwardRef<
   React.ElementRef<typeof SelectPrimitive.Item>,
-  React.ComponentPropsWithoutRef<typeof SelectPrimitive.Item>
->(({ className, children, ...props }, ref) => (
+  React.ComponentPropsWithoutRef<typeof SelectPrimitive.Item> &
+    VariantProps<typeof selectItemVariants>
+>(({ className, children, variant, ...props }, ref) => (
   <SelectPrimitive.Item
     ref={ref}
     className={cn(
-      'relative flex w-full cursor-default select-none items-center rounded-lg px-3 py-2.5 text-sm text-secondary outline-none transition-colors',
-      'focus:bg-primaryAccent focus:text-secondary data-[state=checked]:bg-primary/10 data-[state=checked]:text-secondary data-[disabled]:pointer-events-none data-[disabled]:opacity-50',
+      selectItemVariants({ variant }),
       className
     )}
     {...props}

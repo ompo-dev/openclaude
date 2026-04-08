@@ -73,7 +73,7 @@ if ($BootstrapOnly) {
   exit 0
 }
 
-$serverCommand = "Set-Location `"$Root`"; `$env:AGNO_HOST='127.0.0.1'; `$env:AGNO_PORT='$Port'; `$env:AGNO_UI_PORT='$UiPort'; & `"$PythonExe`" `"$Root\\python\\agno_server.py`""
+$serverCommand = "Set-Location `"$Root`"; `$env:AGNO_HOST='127.0.0.1'; `$env:AGNO_PORT='$Port'; `$env:AGNO_UI_PORT='$UiPort'; if (`$env:OPENCLAUDE_TARGET_WORKSPACE) { `$env:OPENCLAUDE_TARGET_WORKSPACE=`$env:OPENCLAUDE_TARGET_WORKSPACE }; & `"$PythonExe`" `"$Root\\python\\agno_server.py`""
 $uiCommand = "Set-Location `"$UiPath`"; npm run clean; `$env:NEXT_PUBLIC_AGENT_OS_ENDPOINT='http://127.0.0.1:$Port'; npm exec next dev -- --hostname 127.0.0.1 -p $UiPort"
 
 if ($ServerOnly) {

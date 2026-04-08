@@ -52,7 +52,7 @@ fi
 
 if [[ "$server_only" == "true" ]]; then
   cd "$ROOT_DIR"
-  AGNO_HOST="127.0.0.1" AGNO_PORT="$PORT" AGNO_UI_PORT="$UI_PORT" "$PYTHON_BIN" "$ROOT_DIR/python/agno_server.py"
+  AGNO_HOST="127.0.0.1" AGNO_PORT="$PORT" AGNO_UI_PORT="$UI_PORT" OPENCLAUDE_TARGET_WORKSPACE="${OPENCLAUDE_TARGET_WORKSPACE:-}" "$PYTHON_BIN" "$ROOT_DIR/python/agno_server.py"
   exit 0
 fi
 
@@ -73,7 +73,7 @@ trap cleanup EXIT
 
 (
   cd "$ROOT_DIR"
-  AGNO_HOST="127.0.0.1" AGNO_PORT="$PORT" AGNO_UI_PORT="$UI_PORT" "$PYTHON_BIN" "$ROOT_DIR/python/agno_server.py"
+  AGNO_HOST="127.0.0.1" AGNO_PORT="$PORT" AGNO_UI_PORT="$UI_PORT" OPENCLAUDE_TARGET_WORKSPACE="${OPENCLAUDE_TARGET_WORKSPACE:-}" "$PYTHON_BIN" "$ROOT_DIR/python/agno_server.py"
 ) &
 SERVER_PID=$!
 

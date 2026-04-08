@@ -15,6 +15,7 @@ const healthPollIntervalMs = 1000
 type LauncherResult = {
   status: 'started' | 'already_running' | 'failed'
   workspaceRoot: string
+  targetWorkspace?: string
   uiUrl: string
   apiUrl: string
   statusUrl: string
@@ -233,6 +234,7 @@ async function waitForStartupHealth(
 
 async function runLauncher(
   workspaceRoot: string,
+  targetWorkspace: string,
   apiPort: number,
   uiPort: number,
 ): Promise<LauncherResult> {
@@ -245,6 +247,7 @@ async function runLauncher(
         AGNO_UI_PORT: String(uiPort),
         AGNO_PORT: String(apiPort),
         OPENCLAUDE_WEB_WORKSPACE: workspaceRoot,
+        OPENCLAUDE_TARGET_WORKSPACE: targetWorkspace,
       },
       windowsHide: true,
     })
@@ -290,6 +293,7 @@ async function runLauncher(
 
 export const call: LocalCommandCall = async () => {
   const workspaceRoot = resolveWorkspaceRoot()
+  const targetWorkspace = path.resolve(getCwd())
   const requestedUiPort = Number(process.env.AGNO_UI_PORT || '3000')
   const requestedApiPort = Number(process.env.AGNO_PORT || '7777')
 
@@ -310,6 +314,7 @@ export const call: LocalCommandCall = async () => {
       value: [
         'OpenClaude Web is already running.',
         `Workspace: ${workspaceRoot}`,
+        `Target workspace: ${targetWorkspace}`,
         `UI: ${defaultUiUrl} (port ${requestedUiPort})`,
         `API: ${defaultApiUrl} (port ${requestedApiPort})`,
         `Status: ${defaultApiUrl}/integration/status`,
@@ -324,12 +329,12 @@ export const call: LocalCommandCall = async () => {
 
   let launchResult: LauncherResult
   try {
-    launchResult = await runLauncher(workspaceRoot, apiPort, uiPort)
+    launchResult = await runLauncher(workspaceRoot, targetWorkspace, apiPort, uiPort)
   } catch (error) {
     logForDebugging(`web launcher failed: ${error}`, { level: 'error' })
     return {
       type: 'text',
-      value: `OpenClaude Web failed to launch.\nWorkspace: ${workspaceRoot}\nLauncher: ${launcherPath}\nError: ${error instanceof Error ? error.message : String(error)}`,
+      value: `OpenClaude Web failed to launch.\nWorkspace: ${workspaceRoot}\nTarget workspace: ${targetWorkspace}\nLauncher: ${launcherPath}\nError: ${error instanceof Error ? error.message : String(error)}`,
     }
   }
 
@@ -351,6 +356,7 @@ export const call: LocalCommandCall = async () => {
         ? 'OpenClaude Web is already running.'
         : 'OpenClaude Web launch requested.',
       `Workspace: ${launchResult.workspaceRoot}`,
+      `Target workspace: ${launchResult.targetWorkspace || targetWorkspace}`,
       `UI: ${launchResult.uiUrl} (port ${launchResult.uiPort})`,
       `API: ${launchResult.apiUrl} (port ${launchResult.apiPort})`,
       `Status: ${launchResult.statusUrl}`,

@@ -1,8 +1,18 @@
 import {
+  BranchListResponse,
+  GitCommitPayload,
+  GitCommitResult,
+  FolderPickerResponse,
+  GitOverview,
   IntegrationConfigPayload,
   IntegrationSnapshot,
+  OpenWithLaunchResponse,
+  OpenWithTargetsResponse,
   SlashCatalogSnapshot,
+  TerminalSnapshot,
+  TerminalCompletionSnapshot,
   TopicRecord,
+  WorkspaceBootstrapResponse,
   WorkspaceContext
 } from '@/types/integration'
 
@@ -107,6 +117,97 @@ export const getWorkspaceContextAPI = async (
   return response.json()
 }
 
+export const getWorkspaceBootstrapAPI = async (
+  endpoint: string,
+  authToken?: string
+): Promise<WorkspaceBootstrapResponse> => {
+  const response = await fetch(`${endpoint}/integration/workspace-bootstrap`, {
+    method: 'GET',
+    headers: createHeaders(authToken)
+  })
+
+  if (!response.ok) {
+    const detail = await response.text()
+    throw new Error(detail || 'Failed to load workspace bootstrap')
+  }
+
+  return response.json()
+}
+
+export const setWorkspaceTargetAPI = async (
+  endpoint: string,
+  payload: { path: string; create_topic?: boolean },
+  authToken?: string
+): Promise<WorkspaceBootstrapResponse> => {
+  const response = await fetch(`${endpoint}/integration/workspace-target`, {
+    method: 'POST',
+    headers: createHeaders(authToken),
+    body: JSON.stringify(payload)
+  })
+
+  if (!response.ok) {
+    const detail = await response.text()
+    throw new Error(detail || 'Failed to set workspace target')
+  }
+
+  return response.json()
+}
+
+export const getBranchesAPI = async (
+  endpoint: string,
+  authToken?: string
+): Promise<BranchListResponse> => {
+  const response = await fetch(`${endpoint}/integration/branches`, {
+    method: 'GET',
+    headers: createHeaders(authToken)
+  })
+
+  if (!response.ok) {
+    const detail = await response.text()
+    throw new Error(detail || 'Failed to load branches')
+  }
+
+  return response.json()
+}
+
+export const switchBranchAPI = async (
+  endpoint: string,
+  branchName: string,
+  authToken?: string
+): Promise<WorkspaceBootstrapResponse> => {
+  const response = await fetch(`${endpoint}/integration/branches/switch`, {
+    method: 'POST',
+    headers: createHeaders(authToken),
+    body: JSON.stringify({ branch_name: branchName })
+  })
+
+  if (!response.ok) {
+    const detail = await response.text()
+    throw new Error(detail || 'Failed to switch branch')
+  }
+
+  return response.json()
+}
+
+export const createBranchAPI = async (
+  endpoint: string,
+  payload: { branch_name: string; start_point?: string; switch?: boolean },
+  authToken?: string
+): Promise<WorkspaceBootstrapResponse> => {
+  const response = await fetch(`${endpoint}/integration/branches/create`, {
+    method: 'POST',
+    headers: createHeaders(authToken),
+    body: JSON.stringify(payload)
+  })
+
+  if (!response.ok) {
+    const detail = await response.text()
+    throw new Error(detail || 'Failed to create branch')
+  }
+
+  return response.json()
+}
+
 export const getTopicsAPI = async (
   endpoint: string,
   authToken?: string
@@ -119,6 +220,190 @@ export const getTopicsAPI = async (
   if (!response.ok) {
     const detail = await response.text()
     throw new Error(detail || 'Failed to load topics')
+  }
+
+  return response.json()
+}
+
+export const getGitOverviewAPI = async (
+  endpoint: string,
+  authToken?: string
+): Promise<GitOverview> => {
+  const response = await fetch(`${endpoint}/integration/git/overview`, {
+    method: 'GET',
+    headers: createHeaders(authToken)
+  })
+
+  if (!response.ok) {
+    const detail = await response.text()
+    throw new Error(detail || 'Failed to load git overview')
+  }
+
+  return response.json()
+}
+
+export const commitGitChangesAPI = async (
+  endpoint: string,
+  payload: GitCommitPayload,
+  authToken?: string
+): Promise<GitCommitResult> => {
+  const response = await fetch(`${endpoint}/integration/git/commit`, {
+    method: 'POST',
+    headers: createHeaders(authToken),
+    body: JSON.stringify(payload)
+  })
+
+  if (!response.ok) {
+    const detail = await response.text()
+    throw new Error(detail || 'Failed to commit changes')
+  }
+
+  return response.json()
+}
+
+export const getOpenWithTargetsAPI = async (
+  endpoint: string,
+  authToken?: string
+): Promise<OpenWithTargetsResponse> => {
+  const response = await fetch(`${endpoint}/integration/open-with`, {
+    method: 'GET',
+    headers: createHeaders(authToken)
+  })
+
+  if (!response.ok) {
+    const detail = await response.text()
+    throw new Error(detail || 'Failed to load external app targets')
+  }
+
+  return response.json()
+}
+
+export const launchOpenWithTargetAPI = async (
+  endpoint: string,
+  targetId: string,
+  authToken?: string
+): Promise<OpenWithLaunchResponse> => {
+  const response = await fetch(`${endpoint}/integration/open-with`, {
+    method: 'POST',
+    headers: createHeaders(authToken),
+    body: JSON.stringify({ target_id: targetId })
+  })
+
+  if (!response.ok) {
+    const detail = await response.text()
+    throw new Error(detail || 'Failed to open external app')
+  }
+
+  return response.json()
+}
+
+export const pickWorkspaceFolderAPI = async (
+  endpoint: string,
+  payload?: { title?: string },
+  authToken?: string
+): Promise<FolderPickerResponse> => {
+  const response = await fetch(`${endpoint}/integration/folder-picker`, {
+    method: 'POST',
+    headers: createHeaders(authToken),
+    body: JSON.stringify(payload ?? {})
+  })
+
+  if (!response.ok) {
+    const detail = await response.text()
+    throw new Error(detail || 'Failed to open folder picker')
+  }
+
+  return response.json()
+}
+
+export const getTerminalSnapshotAPI = async (
+  endpoint: string,
+  authToken?: string
+): Promise<TerminalSnapshot> => {
+  const response = await fetch(`${endpoint}/integration/terminal`, {
+    method: 'GET',
+    headers: createHeaders(authToken)
+  })
+
+  if (!response.ok) {
+    const detail = await response.text()
+    throw new Error(detail || 'Failed to load terminal history')
+  }
+
+  return response.json()
+}
+
+export const runTerminalCommandAPI = async (
+  endpoint: string,
+  command: string,
+  authToken?: string
+): Promise<TerminalSnapshot> => {
+  const response = await fetch(`${endpoint}/integration/terminal/run`, {
+    method: 'POST',
+    headers: createHeaders(authToken),
+    body: JSON.stringify({ command })
+  })
+
+  if (!response.ok) {
+    const detail = await response.text()
+    throw new Error(detail || 'Failed to run terminal command')
+  }
+
+  return response.json()
+}
+
+export const completeTerminalCommandAPI = async (
+  endpoint: string,
+  command: string,
+  authToken?: string
+): Promise<TerminalCompletionSnapshot> => {
+  const response = await fetch(`${endpoint}/integration/terminal/complete`, {
+    method: 'POST',
+    headers: createHeaders(authToken),
+    body: JSON.stringify({ command })
+  })
+
+  if (!response.ok) {
+    const detail = await response.text()
+    throw new Error(detail || 'Failed to complete terminal command')
+  }
+
+  return response.json()
+}
+
+export const sendTerminalInputAPI = async (
+  endpoint: string,
+  data: string,
+  authToken?: string
+): Promise<TerminalSnapshot> => {
+  const response = await fetch(`${endpoint}/integration/terminal/input`, {
+    method: 'POST',
+    headers: createHeaders(authToken),
+    body: JSON.stringify({ data })
+  })
+
+  if (!response.ok) {
+    const detail = await response.text()
+    throw new Error(detail || 'Failed to send terminal input')
+  }
+
+  return response.json()
+}
+
+export const resizeTerminalAPI = async (
+  endpoint: string,
+  payload: { cols: number; rows: number },
+  authToken?: string
+): Promise<TerminalSnapshot> => {
+  const response = await fetch(`${endpoint}/integration/terminal/resize`, {
+    method: 'POST',
+    headers: createHeaders(authToken),
+    body: JSON.stringify(payload)
+  })
+
+  if (!response.ok) {
+    const detail = await response.text()
+    throw new Error(detail || 'Failed to resize terminal')
   }
 
   return response.json()

@@ -5,11 +5,12 @@ from typing import Iterable
 
 from agno.tools import Toolkit
 
-from .bridge import WORKSPACE_ROOT, resolve_workspace_path
+from .bridge import get_project_workspace_root, resolve_workspace_path
 
 
 def _iter_tree(
     root: Path,
+    workspace_root: Path,
     *,
     max_depth: int,
     include_hidden: bool,
@@ -23,13 +24,14 @@ def _iter_tree(
         if not include_hidden and entry.name.startswith("."):
             continue
 
-        relative = entry.relative_to(WORKSPACE_ROOT).as_posix()
+        relative = entry.relative_to(workspace_root).as_posix()
         suffix = "/" if entry.is_dir() else ""
         yield relative + suffix
 
         if entry.is_dir():
             yield from _iter_tree(
                 entry,
+                workspace_root=workspace_root,
                 max_depth=max_depth,
                 include_hidden=include_hidden,
                 current_depth=current_depth + 1,
@@ -38,7 +40,7 @@ def _iter_tree(
 
 class WorkspaceFileTools(Toolkit):
     def __init__(self, workspace_root: Path | None = None):
-        self.workspace_root = (workspace_root or WORKSPACE_ROOT).resolve()
+        self.workspace_root = workspace_root.resolve() if workspace_root else None
         super().__init__(
             name="workspace_files",
             tools=[
@@ -62,6 +64,9 @@ class WorkspaceFileTools(Toolkit):
             ],
         )
 
+    def _workspace_root(self) -> Path:
+        return self.workspace_root or get_project_workspace_root()
+
     def list_workspace_tree(
         self,
         path: str = ".",
@@ -78,13 +83,15 @@ class WorkspaceFileTools(Toolkit):
             include_hidden: Include dotfiles and hidden folders when true.
             limit: Maximum number of entries to return.
         """
-        target = resolve_workspace_path(path, base_dir=self.workspace_root)
+        workspace_root = self._workspace_root()
+        target = resolve_workspace_path(path, base_dir=workspace_root)
         if not target.is_dir():
             raise ValueError(f"Not a directory: {path}")
 
         entries = list(
             _iter_tree(
                 target,
+                workspace_root=workspace_root,
                 max_depth=max_depth,
                 include_hidden=include_hidden,
             )
@@ -109,13 +116,14 @@ class WorkspaceFileTools(Toolkit):
             base_path: Relative path used as the search root.
             limit: Maximum number of matches to return.
         """
-        target = resolve_workspace_path(base_path, base_dir=self.workspace_root)
+        workspace_root = self._workspace_root()
+        target = resolve_workspace_path(base_path, base_dir=workspace_root)
         if not target.is_dir():
             raise ValueError(f"Not a directory: {base_path}")
 
         matches = sorted(
             {
-                path.relative_to(self.workspace_root).as_posix()
+                path.relative_to(workspace_root).as_posix()
                 for path in target.glob(pattern)
                 if path.exists()
             }
@@ -140,7 +148,8 @@ class WorkspaceFileTools(Toolkit):
             start_line: First line number to include, 1-based.
             end_line: Last line number to include, 1-based. Leave empty for EOF.
         """
-        target = resolve_workspace_path(path, base_dir=self.workspace_root)
+        workspace_root = self._workspace_root()
+        target = resolve_workspace_path(path, base_dir=workspace_root)
         if target.is_dir():
             raise ValueError(f"Path is a directory: {path}")
 
@@ -166,15 +175,16 @@ class WorkspaceFileTools(Toolkit):
             content: Full file content.
             create_dirs: Create parent directories automatically when true.
         """
+        workspace_root = self._workspace_root()
         target = resolve_workspace_path(
             path,
             allow_missing=True,
-            base_dir=self.workspace_root,
+            base_dir=workspace_root,
         )
         if create_dirs:
             target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(content, encoding="utf-8")
-        return f"Wrote {target.relative_to(self.workspace_root).as_posix()} ({len(content)} chars)."
+        return f"Wrote {target.relative_to(workspace_root).as_posix()} ({len(content)} chars)."
 
     def replace_in_file(
         self,
@@ -195,7 +205,8 @@ class WorkspaceFileTools(Toolkit):
         if not search_text:
             raise ValueError("search_text cannot be empty")
 
-        target = resolve_workspace_path(path, base_dir=self.workspace_root)
+        workspace_root = self._workspace_root()
+        target = resolve_workspace_path(path, base_dir=workspace_root)
         content = target.read_text(encoding="utf-8")
         occurrences = content.count(search_text)
         if occurrences == 0:
@@ -220,10 +231,10 @@ class WorkspaceFileTools(Toolkit):
         target = resolve_workspace_path(
             path,
             allow_missing=True,
-            base_dir=self.workspace_root,
+            base_dir=self._workspace_root(),
         )
         target.mkdir(parents=True, exist_ok=True)
-        return f"Created directory {target.relative_to(self.workspace_root).as_posix()}/"
+        return f"Created directory {target.relative_to(self._workspace_root()).as_posix()}/"
 
     def delete_path(self, path: str, recursive: bool = False) -> str:
         """
@@ -233,7 +244,7 @@ class WorkspaceFileTools(Toolkit):
             path: Relative path to remove.
             recursive: Required for deleting directories.
         """
-        target = resolve_workspace_path(path, base_dir=self.workspace_root)
+        target = resolve_workspace_path(path, base_dir=self._workspace_root())
 
         if target.is_dir():
             if not recursive:

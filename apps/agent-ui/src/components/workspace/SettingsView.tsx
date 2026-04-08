@@ -87,9 +87,10 @@ const GEMINI_AUTH_OPTIONS = [
 ] as const
 
 const inputClassName =
-  'h-10 w-full rounded-xl border border-primary/10 bg-background-secondary px-3 text-sm text-secondary outline-none transition-colors placeholder:text-muted focus:border-primary/30'
+  'h-10 w-full rounded-md border border-[#30363d] bg-[#0d1117] px-3 text-sm text-[#e6edf3] outline-none transition-colors placeholder:text-[#7d8590] focus:border-[#1f6feb]'
 
-const fieldLabelClassName = 'mb-2 text-[11px] uppercase text-muted'
+const fieldLabelClassName =
+  'mb-2 text-[11px] uppercase tracking-[0.12em] text-[#7d8590]'
 
 const createDraftId = () =>
   typeof crypto !== 'undefined' && 'randomUUID' in crypto
@@ -147,11 +148,11 @@ const Field = ({
 const StatusBadge = ({ value }: { value: string }) => (
   <span
     className={cn(
-      'inline-flex rounded-full px-2.5 py-1 text-[11px] uppercase tracking-wide',
-      value === 'active' && 'bg-primary/15 text-primary',
-      value === 'connected' && 'bg-positive/15 text-positive',
-      value === 'offline' && 'bg-destructive/15 text-destructive',
-      value === 'manual' && 'bg-background-secondary text-muted'
+      'inline-flex rounded-full border px-2.5 py-1 text-[11px] uppercase tracking-[0.12em]',
+      value === 'active' && 'border-[#1f6feb33] bg-[#0f1a2b] text-[#58a6ff]',
+      value === 'connected' && 'border-[#2f6f3e] bg-[#102019] text-[#3fb950]',
+      value === 'offline' && 'border-[#da3633] bg-[#2a1215] text-[#f85149]',
+      value === 'manual' && 'border-[#30363d] bg-[#0d1117] text-[#7d8590]'
     )}
   >
     {value}
@@ -162,20 +163,20 @@ const ProviderCard = ({ provider }: { provider: ProviderStatus }) => {
   const icon = getProviderIcon(provider.label)
 
   return (
-    <div className="rounded-xl border border-primary/10 bg-background-secondary p-4">
+    <div className="rounded-lg border border-[#30363d] bg-[#0d1117] p-4">
       <div className="mb-3 flex items-center justify-between gap-3">
         <div className="flex items-center gap-2">
           {icon ? <Icon type={icon} size="xs" /> : <Icon type="agent" size="xs" />}
           <div>
-            <div className="text-sm font-medium text-secondary">
+            <div className="text-sm font-medium text-[#f0f6fc]">
               {provider.label}
             </div>
-            <div className="text-xs text-muted">{provider.base_url}</div>
+            <div className="text-xs text-[#7d8590]">{provider.base_url}</div>
           </div>
         </div>
         <StatusBadge value={provider.status} />
       </div>
-      <div className="text-xs text-muted">
+      <div className="text-xs text-[#7d8590]">
         {provider.models.length > 0
           ? provider.models.join(', ')
           : 'No models detected yet'}
@@ -548,7 +549,7 @@ const SettingsView = () => {
 
   if (loading || !snapshot || !draft) {
     return (
-      <div className="flex h-full items-center justify-center text-sm text-muted">
+      <div className="flex h-full items-center justify-center text-sm text-[#7d8590]">
         Loading integration settings...
       </div>
     )
@@ -556,17 +557,17 @@ const SettingsView = () => {
 
   return (
     <div className="flex h-full flex-col overflow-hidden">
-      <div className="border-b border-primary/10 px-8 py-6">
+      <div className="border-b border-[#30363d] px-8 py-6">
         <div className="mb-2 flex items-center gap-2">
           <Icon type="hammer" size="xs" />
           <span className="text-xs font-medium uppercase text-primary">
             Settings
           </span>
         </div>
-        <h1 className="text-2xl font-semibold tracking-tight text-secondary">
+        <h1 className="text-2xl font-semibold tracking-tight text-[#f0f6fc]">
           OpenClaude Web configuration
         </h1>
-        <p className="mt-2 max-w-3xl text-sm text-muted">
+        <p className="mt-2 max-w-3xl text-sm text-[#7d8590]">
           Configure the OpenClaude runtime profile, the local router and the
           native model registry used by OpenClaude itself.
         </p>
@@ -574,41 +575,41 @@ const SettingsView = () => {
 
       <div className="flex-1 overflow-y-auto px-8 py-6">
         <div className="mb-6 grid gap-3 md:grid-cols-5">
-          <div className="rounded-xl border border-primary/10 bg-background-secondary px-4 py-3">
-            <div className="mb-1 text-[11px] uppercase text-muted">Runtime</div>
-            <div className="text-sm font-medium text-secondary">
+          <div className="rounded-lg border border-[#30363d] bg-[#0d1117] px-4 py-3">
+            <div className="mb-1 text-[11px] uppercase tracking-[0.12em] text-[#7d8590]">Runtime</div>
+            <div className="text-sm font-medium text-[#f0f6fc]">
               {snapshot.runtime.label}
             </div>
           </div>
-          <div className="rounded-xl border border-primary/10 bg-background-secondary px-4 py-3">
-            <div className="mb-1 text-[11px] uppercase text-muted">
+          <div className="rounded-lg border border-[#30363d] bg-[#0d1117] px-4 py-3">
+            <div className="mb-1 text-[11px] uppercase tracking-[0.12em] text-[#7d8590]">
               Effective Router
             </div>
-            <div className="text-sm font-medium text-secondary">
+            <div className="text-sm font-medium text-[#f0f6fc]">
               {snapshot.router.effective_model_id || 'pending'}
             </div>
           </div>
-          <div className="rounded-xl border border-primary/10 bg-background-secondary px-4 py-3">
-            <div className="mb-1 text-[11px] uppercase text-muted">
+          <div className="rounded-lg border border-[#30363d] bg-[#0d1117] px-4 py-3">
+            <div className="mb-1 text-[11px] uppercase tracking-[0.12em] text-[#7d8590]">
               Tool Catalog
             </div>
-            <div className="text-sm font-medium text-secondary">
+            <div className="text-sm font-medium text-[#f0f6fc]">
               {snapshot.tools.count} native tools
             </div>
           </div>
-          <div className="rounded-xl border border-primary/10 bg-background-secondary px-4 py-3">
-            <div className="mb-1 text-[11px] uppercase text-muted">
+          <div className="rounded-lg border border-[#30363d] bg-[#0d1117] px-4 py-3">
+            <div className="mb-1 text-[11px] uppercase tracking-[0.12em] text-[#7d8590]">
               Agent Models
             </div>
-            <div className="text-sm font-medium text-secondary">
+            <div className="text-sm font-medium text-[#f0f6fc]">
               {snapshot.native_settings.agent_models.length} configured
             </div>
           </div>
-          <div className="rounded-xl border border-primary/10 bg-background-secondary px-4 py-3">
-            <div className="mb-1 text-[11px] uppercase text-muted">
+          <div className="rounded-lg border border-[#30363d] bg-[#0d1117] px-4 py-3">
+            <div className="mb-1 text-[11px] uppercase tracking-[0.12em] text-[#7d8590]">
               Settings File
             </div>
-            <div className="text-sm font-medium text-secondary">
+            <div className="text-sm font-medium text-[#f0f6fc]">
               {snapshot.native_settings.exists ? 'Detected' : 'Will be created'}
             </div>
           </div>
@@ -710,7 +711,7 @@ const SettingsView = () => {
               {draft.runtime.profile === 'anthropic' &&
               snapshot.runtime.profile === 'anthropic' &&
               snapshot.runtime.source === 'claude-config' ? (
-                <div className="mt-4 rounded-xl border border-primary/10 bg-background-secondary px-4 py-3 text-sm text-muted">
+                <div className="mt-4 rounded-lg border border-[#30363d] bg-[#0d1117] px-4 py-3 text-sm text-[#7d8590]">
                   Claude Code login detected from the local config directory
                   (`~/.openclaude` or legacy `~/.claude`). The web runtime is
                   inheriting that same Anthropic session automatically.
@@ -790,7 +791,7 @@ const SettingsView = () => {
                 ) : null}
               </div>
 
-              <div className="mt-4 rounded-xl border border-primary/10 bg-background-secondary px-4 py-3 text-sm text-muted">
+              <div className="mt-4 rounded-lg border border-[#30363d] bg-[#0d1117] px-4 py-3 text-sm text-[#7d8590]">
                 Effective router: {snapshot.router.effective_provider || 'pending'} /{' '}
                 {snapshot.router.effective_model_id || 'pending'}
               </div>
@@ -811,7 +812,7 @@ const SettingsView = () => {
                 </Button>
               }
             >
-              <div className="mb-4 rounded-xl border border-primary/10 bg-background-secondary px-4 py-3 text-sm text-muted">
+              <div className="mb-4 rounded-lg border border-[#30363d] bg-[#0d1117] px-4 py-3 text-sm text-[#7d8590]">
                 Settings path: {snapshot.native_settings.settings_path}
               </div>
               <div className="space-y-3">
@@ -819,7 +820,7 @@ const SettingsView = () => {
                   draft.native_settings.agent_models.map((entry) => (
                     <div
                       key={entry.id}
-                      className="rounded-xl border border-primary/10 bg-background-secondary p-4"
+                      className="rounded-lg border border-[#30363d] bg-[#0d1117] p-4"
                     >
                       <div className="mb-4 grid gap-4 lg:grid-cols-[1fr,1.3fr,1fr,auto]">
                         <Field label="Model Name">
@@ -879,7 +880,7 @@ const SettingsView = () => {
                           </Button>
                         </div>
                       </div>
-                      <div className="text-xs text-muted">
+                      <div className="text-xs text-[#7d8590]">
                         {entry.api_key_configured || entry.api_key_masked
                           ? 'Existing secret is preserved when this field stays blank.'
                           : 'No secret stored for this model yet.'}
@@ -887,8 +888,8 @@ const SettingsView = () => {
                     </div>
                   ))
                 ) : (
-                  <div className="rounded-xl border border-dashed border-primary/10 px-4 py-6 text-sm text-muted">
-                    No agent models saved yet. Add OpenAI-compatible model endpoints here to reuse them in routing and in the sidebar quick switcher.
+                  <div className="rounded-lg border border-dashed border-[#30363d] px-4 py-6 text-sm text-[#7d8590]">
+                    No agent models saved yet. Add OpenAI-compatible model endpoints here to reuse them in routing and in the chat quick switcher.
                   </div>
                 )}
               </div>
@@ -913,7 +914,7 @@ const SettingsView = () => {
                 {routingKeySuggestions.map((key) => (
                   <span
                     key={key}
-                    className="rounded-full border border-primary/10 bg-background-secondary px-3 py-1.5 text-xs text-secondary"
+                    className="rounded-full border border-[#30363d] bg-[#0d1117] px-3 py-1.5 text-xs text-[#c9d1d9]"
                   >
                     {key}
                   </span>
@@ -924,7 +925,7 @@ const SettingsView = () => {
                   draft.native_settings.agent_routing.map((entry) => (
                     <div
                       key={entry.id}
-                      className="rounded-xl border border-primary/10 bg-background-secondary p-4"
+                      className="rounded-lg border border-[#30363d] bg-[#0d1117] p-4"
                     >
                       <div className="grid gap-4 md:grid-cols-[1fr,1fr,auto]">
                         <Field label="Route Key">
@@ -989,7 +990,7 @@ const SettingsView = () => {
                     </div>
                   ))
                 ) : (
-                  <div className="rounded-xl border border-dashed border-primary/10 px-4 py-6 text-sm text-muted">
+                  <div className="rounded-lg border border-dashed border-[#30363d] px-4 py-6 text-sm text-[#7d8590]">
                     No routing rules yet. Add entries like `Explore`, `Plan`, `general-purpose`, `frontend-dev` and `default`.
                   </div>
                 )}
@@ -1018,7 +1019,7 @@ const SettingsView = () => {
                   {snapshot.tools.items.map((tool) => (
                     <span
                       key={tool.id}
-                      className="rounded-full border border-primary/10 bg-background-secondary px-3 py-1.5 text-xs text-secondary"
+                      className="rounded-full border border-[#30363d] bg-[#0d1117] px-3 py-1.5 text-xs text-[#c9d1d9]"
                     >
                       {tool.label}
                     </span>
@@ -1047,17 +1048,17 @@ const SettingsView = () => {
                 {snapshot.platform_features.map((feature) => (
                   <div
                     key={feature.id}
-                    className="rounded-xl border border-primary/10 bg-background-secondary px-4 py-3"
+                    className="rounded-lg border border-[#30363d] bg-[#0d1117] px-4 py-3"
                   >
                     <div className="mb-2 flex items-center justify-between gap-3">
-                      <div className="text-sm font-medium text-secondary">
+                      <div className="text-sm font-medium text-[#f0f6fc]">
                         {feature.label}
                       </div>
                       <StatusBadge
                         value={feature.enabled ? 'active' : 'manual'}
                       />
                     </div>
-                    <div className="text-xs text-muted">{feature.notes}</div>
+                    <div className="text-xs text-[#7d8590]">{feature.notes}</div>
                   </div>
                 ))}
               </div>
