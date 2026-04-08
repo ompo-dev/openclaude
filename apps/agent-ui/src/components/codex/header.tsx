@@ -96,12 +96,12 @@ export function Header({
       <header className="shrink-0 border-b border-[#30363d] bg-[#0d1117] px-3 py-2.5">
         <div className="flex items-start justify-between gap-4">
           <div className="min-w-0">
-            <div className="flex items-center gap-2">
-              <h1 className="truncate text-[20px] font-semibold tracking-[-0.02em] text-[#f0f6fc]">
+            <div className="flex items-end gap-2">
+              <h1 className="max-w-[300px] truncate text-[20px] font-semibold tracking-[-0.02em] text-[#f0f6fc]">
                 {title}
               </h1>
               <span className="truncate text-sm text-[#7d8590]">
-                {projectName} | {branch}
+                {projectName} • {branch}
               </span>
             </div>
           </div>

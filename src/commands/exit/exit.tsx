@@ -1,54 +1,64 @@
-import { feature } from 'bun:bundle';
-import { spawnSync } from 'child_process';
-import sample from 'lodash-es/sample.js';
-import { fileURLToPath } from 'node:url';
-import * as React from 'react';
-import { ExitFlow } from '../../components/ExitFlow.js';
-import type { LocalJSXCommandOnDone } from '../../types/command.js';
-import { isBgSession } from '../../utils/concurrentSessions.js';
-import { getCwd } from '../../utils/cwd.js';
-import { gracefulShutdown } from '../../utils/gracefulShutdown.js';
-import { getCurrentWorktreeSession } from '../../utils/worktree.js';
+import { feature } from "bun:bundle";
+import { spawnSync } from "child_process";
+import sample from "lodash-es/sample.js";
+import { fileURLToPath } from "node:url";
+import * as React from "react";
+import { ExitFlow } from "../../components/ExitFlow.js";
+import type { LocalJSXCommandOnDone } from "../../types/command.js";
+import { isBgSession } from "../../utils/concurrentSessions.js";
+import { getCwd } from "../../utils/cwd.js";
+import { gracefulShutdown } from "../../utils/gracefulShutdown.js";
+import { getCurrentWorktreeSession } from "../../utils/worktree.js";
 
-const GOODBYE_MESSAGES = ['Goodbye!', 'See ya!', 'Bye!', 'Catch you later!'];
-const WEB_LAUNCHER_PATH = fileURLToPath(new URL('../../../scripts/openclaude-web.mjs', import.meta.url));
+const GOODBYE_MESSAGES = ["Falou!", "Até mais!", "Adeus!", "Até a próxima!"];
+const WEB_LAUNCHER_PATH = fileURLToPath(
+  new URL("../../../scripts/openclaude-web.mjs", import.meta.url),
+);
 
 function getRandomGoodbyeMessage(): string {
-  return sample(GOODBYE_MESSAGES) ?? 'Goodbye!';
+  return sample(GOODBYE_MESSAGES) ?? "Goodbye!";
 }
 
 function stopOpenClaudeWebStack(): void {
-  if (process.env.OPENCLAUDE_EMBEDDED_TERMINAL_SESSION === '1') {
+  if (process.env.OPENCLAUDE_EMBEDDED_TERMINAL_SESSION === "1") {
     return;
   }
 
-  spawnSync(process.execPath, [WEB_LAUNCHER_PATH, '--stop'], {
+  spawnSync(process.execPath, [WEB_LAUNCHER_PATH, "--stop"], {
     cwd: getCwd(),
-    stdio: 'ignore',
-    windowsHide: true
+    stdio: "ignore",
+    windowsHide: true,
   });
 }
 
-export async function call(onDone: LocalJSXCommandOnDone): Promise<React.ReactNode> {
+export async function call(
+  onDone: LocalJSXCommandOnDone,
+): Promise<React.ReactNode> {
   // Inside a `claude --bg` tmux session: detach instead of kill. The REPL
   // keeps running; `claude attach` can reconnect. Covers /exit, /quit,
   // ctrl+c, ctrl+d — all funnel through here via REPL's handleExit.
-  if (feature('BG_SESSIONS') && isBgSession()) {
+  if (feature("BG_SESSIONS") && isBgSession()) {
     onDone();
-    spawnSync('tmux', ['detach-client'], {
-      stdio: 'ignore'
+    spawnSync("tmux", ["detach-client"], {
+      stdio: "ignore",
     });
     return null;
   }
   const showWorktree = getCurrentWorktreeSession() !== null;
   if (showWorktree) {
-    return <ExitFlow showWorktree={showWorktree} onDone={message => {
-      stopOpenClaudeWebStack();
-      onDone(message);
-    }} onCancel={() => onDone()} />;
+    return (
+      <ExitFlow
+        showWorktree={showWorktree}
+        onDone={(message) => {
+          stopOpenClaudeWebStack();
+          onDone(message);
+        }}
+        onCancel={() => onDone()}
+      />
+    );
   }
   stopOpenClaudeWebStack();
   onDone(getRandomGoodbyeMessage());
-  await gracefulShutdown(0, 'prompt_input_exit');
+  await gracefulShutdown(0, "prompt_input_exit");
   return null;
 }

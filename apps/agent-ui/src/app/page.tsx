@@ -23,10 +23,13 @@ import {
   getOpenWithTargetsAPI,
   getTerminalSnapshotAPI,
   launchOpenWithTargetAPI,
+  openFileInEditorAPI,
   pickWorkspaceFolderAPI,
+  revertGitFilesAPI,
   resizeTerminalAPI,
   runTerminalCommandAPI,
-  sendTerminalInputAPI
+  sendTerminalInputAPI,
+  unstageGitFilesAPI
 } from '@/api/integration'
 import useAIChatStreamHandler from '@/hooks/useAIStreamHandler'
 import useChatActions from '@/hooks/useChatActions'
@@ -721,6 +724,53 @@ function CodexApp() {
     await launchOpenWithTargetAPI(selectedEndpoint, preferredOpenWithTarget.id, authToken)
   }, [authToken, preferredOpenWithTarget, selectedEndpoint])
 
+  const handleOpenFileInEditor = useCallback(
+    async (filePath: string) => {
+      await openFileInEditorAPI(selectedEndpoint, filePath, authToken)
+    },
+    [authToken, selectedEndpoint]
+  )
+
+  const handleRevertFiles = useCallback(
+    async (filePaths: string[]) => {
+      await revertGitFilesAPI(selectedEndpoint, filePaths, authToken)
+      await Promise.all([
+        loadRuntimeData(),
+        refreshWorkspaceContext(),
+        refreshBranches(),
+        refreshTopics()
+      ])
+    },
+    [
+      authToken,
+      loadRuntimeData,
+      refreshBranches,
+      refreshTopics,
+      refreshWorkspaceContext,
+      selectedEndpoint
+    ]
+  )
+
+  const handleUnstageFiles = useCallback(
+    async (filePaths: string[]) => {
+      await unstageGitFilesAPI(selectedEndpoint, filePaths, authToken)
+      await Promise.all([
+        loadRuntimeData(),
+        refreshWorkspaceContext(),
+        refreshBranches(),
+        refreshTopics()
+      ])
+    },
+    [
+      authToken,
+      loadRuntimeData,
+      refreshBranches,
+      refreshTopics,
+      refreshWorkspaceContext,
+      selectedEndpoint
+    ]
+  )
+
   return (
     <ThemeProvider>
       <div className="flex h-screen bg-background text-foreground">
@@ -863,6 +913,15 @@ function CodexApp() {
                   onClose={() => setDiffViewerOpen(false)}
                   fileChanges={allFileChanges}
                   files={workspaceContext?.changed_files ?? []}
+                  onOpenInEditor={(filePath) => {
+                    void handleOpenFileInEditor(filePath)
+                  }}
+                  onRevertFiles={(filePaths) => {
+                    void handleRevertFiles(filePaths)
+                  }}
+                  onUnstageFiles={(filePaths) => {
+                    void handleUnstageFiles(filePaths)
+                  }}
                 />
               </div>
             </>

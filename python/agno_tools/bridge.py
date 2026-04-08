@@ -2002,6 +2002,89 @@ def launch_open_with_target(target_id: str) -> dict[str, Any]:
     }
 
 
+def _resolve_workspace_file_path(
+    relative_path: str, *, allow_missing: bool = False
+) -> tuple[Path, str, Path]:
+    normalized_path = _trimmed(relative_path)
+    if not normalized_path:
+        raise ValueError("file_path is required.")
+
+    workspace_root = get_project_workspace_root().resolve()
+    candidate = Path(normalized_path).expanduser()
+    absolute_path = (
+        candidate.resolve()
+        if candidate.is_absolute()
+        else (workspace_root / candidate).resolve()
+    )
+
+    if absolute_path != workspace_root and workspace_root not in absolute_path.parents:
+        raise ValueError("File path must stay inside the active workspace.")
+
+    relative_workspace_path = absolute_path.relative_to(workspace_root).as_posix()
+    if not allow_missing and not absolute_path.exists():
+        raise ValueError(f"File not found: {relative_workspace_path}")
+
+    return absolute_path, relative_workspace_path, workspace_root
+
+
+def open_workspace_file_in_editor(file_path: str) -> dict[str, Any]:
+    absolute_path, relative_workspace_path, workspace_root = _resolve_workspace_file_path(
+        file_path, allow_missing=True
+    )
+    targets = get_open_with_targets()["items"]
+    preferred_target = next(
+        (
+            target
+            for target in targets
+            if target.get("installed") and target.get("id") in {"cursor", "vscode"}
+        ),
+        None,
+    )
+
+    if preferred_target is None:
+        preferred_target = next(
+            (target for target in targets if target.get("installed") and target.get("preferred")),
+            None,
+        )
+
+    if preferred_target is None:
+        preferred_target = next(
+            (target for target in targets if target.get("installed") and target.get("id") == "explorer"),
+            None,
+        )
+
+    if preferred_target is None:
+        raise ValueError("No supported editor target is available on this machine.")
+
+    executable = str(preferred_target["executable"])
+    if os.name == "nt":
+        target_id = str(preferred_target["id"])
+        if target_id in {"cursor", "vscode"}:
+            command = [executable, "-g", f"{absolute_path}:1"]
+        elif target_id == "explorer":
+            command = [executable, f"/select,{absolute_path}"]
+        else:
+            command = [executable, str(absolute_path)]
+    else:
+        command = [executable, str(absolute_path)]
+
+    try:
+        subprocess.Popen(
+            command,
+            cwd=str(workspace_root),
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+    except Exception as exc:
+        raise ValueError(f"Failed to open file in editor: {exc}") from exc
+
+    return {
+        "target": preferred_target["id"],
+        "label": preferred_target["label"],
+        "path": relative_workspace_path,
+    }
+
+
 def browse_workspace_folder(title: str | None = None) -> dict[str, Any]:
     description = _trimmed(title) or "Selecione uma pasta para criar um topico"
     workspace_root = get_project_workspace_root().resolve()
@@ -2426,6 +2509,124 @@ def get_git_overview() -> dict[str, Any]:
             "gh_available": gh_available,
         },
     }
+
+
+def _revert_tracked_workspace_file(repo_root: Path, relative_path: str) -> None:
+    completed = subprocess.run(
+        ["git", "restore", "--source=HEAD", "--staged", "--worktree", "--", relative_path],
+        cwd=str(repo_root),
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+    if completed.returncode == 0:
+        return
+
+    unstage_completed = subprocess.run(
+        ["git", "restore", "--staged", "--", relative_path],
+        cwd=str(repo_root),
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+    if unstage_completed.returncode != 0:
+        raise ValueError(
+            completed.stderr.strip()
+            or completed.stdout.strip()
+            or unstage_completed.stderr.strip()
+            or unstage_completed.stdout.strip()
+            or f"Failed to revert {relative_path}."
+        )
+
+    absolute_path = (repo_root / relative_path).resolve()
+    if absolute_path.exists():
+        if absolute_path.is_dir():
+            shutil.rmtree(absolute_path)
+        else:
+            absolute_path.unlink()
+
+
+def revert_workspace_files(file_paths: list[str]) -> dict[str, Any]:
+    if not file_paths:
+        raise ValueError("file_paths is required.")
+
+    context = get_workspace_context()
+    repo_root = Path(context.get("project_root") or get_project_workspace_root()).resolve()
+    if not context.get("is_git_repo"):
+        raise ValueError("Current workspace is not a git repository.")
+
+    for requested_path in file_paths:
+        absolute_path, relative_workspace_path, _ = _resolve_workspace_file_path(
+            requested_path, allow_missing=True
+        )
+        tracked_output = _run_git(
+            ["ls-files", "--error-unmatch", "--", relative_workspace_path],
+            cwd=repo_root,
+        )
+        if tracked_output:
+            _revert_tracked_workspace_file(repo_root, relative_workspace_path)
+            continue
+
+        if absolute_path.exists():
+            if absolute_path.is_dir():
+                shutil.rmtree(absolute_path)
+            else:
+                absolute_path.unlink()
+
+    return get_git_overview()
+
+
+def unstage_workspace_files(file_paths: list[str]) -> dict[str, Any]:
+    if not file_paths:
+        raise ValueError("file_paths is required.")
+
+    context = get_workspace_context()
+    repo_root = Path(context.get("project_root") or get_project_workspace_root()).resolve()
+    if not context.get("is_git_repo"):
+        raise ValueError("Current workspace is not a git repository.")
+
+    for requested_path in file_paths:
+        _, relative_workspace_path, _ = _resolve_workspace_file_path(
+            requested_path, allow_missing=True
+        )
+        staged_output = _run_git(
+            ["diff", "--cached", "--name-only", "--", relative_workspace_path],
+            cwd=repo_root,
+        )
+        if not staged_output:
+            continue
+
+        completed = subprocess.run(
+            ["git", "restore", "--staged", "--", relative_workspace_path],
+            cwd=str(repo_root),
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
+        if completed.returncode == 0:
+            continue
+
+        fallback = subprocess.run(
+            ["git", "rm", "--cached", "--force", "--", relative_workspace_path],
+            cwd=str(repo_root),
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
+        if fallback.returncode != 0:
+            raise ValueError(
+                completed.stderr.strip()
+                or completed.stdout.strip()
+                or fallback.stderr.strip()
+                or fallback.stdout.strip()
+                or f"Failed to unstage {relative_workspace_path}."
+            )
+
+    return get_git_overview()
 
 
 def _run_git_checked(args: list[str], *, cwd: Path) -> str:

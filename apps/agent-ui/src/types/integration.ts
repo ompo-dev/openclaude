@@ -282,6 +282,12 @@ export interface OpenWithLaunchResponse {
   workspace: string
 }
 
+export interface OpenEditorLaunchResponse {
+  target: string
+  label: string
+  path: string
+}
+
 export interface FolderPickerResponse {
   path: string | null
   cancelled: boolean

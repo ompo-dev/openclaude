@@ -28,7 +28,10 @@ interface TerminalProps {
   onComplete: (
     command: string
   ) => Promise<TerminalCompletionSnapshot> | TerminalCompletionSnapshot
-  onResize?: (dimensions: { cols: number; rows: number }) => Promise<void> | void
+  onResize?: (dimensions: {
+    cols: number
+    rows: number
+  }) => Promise<void> | void
 }
 
 const APPROX_CHAR_WIDTH = 7.4
@@ -81,7 +84,10 @@ const applyCompletion = (
   return `${before}${match}${after}`
 }
 
-const buildTranscript = (entries: TerminalEntry[], completionMatches: string[]) => {
+const buildTranscript = (
+  entries: TerminalEntry[],
+  completionMatches: string[]
+) => {
   const chunks: string[] = []
 
   entries.forEach((entry) => {
@@ -143,7 +149,10 @@ export function Terminal({
   const [cursorIndex, setCursorIndex] = useState(0)
   const [completionMatches, setCompletionMatches] = useState<string[]>([])
 
-  const prompt = useMemo(() => formatShellPrompt(shellName, cwd), [cwd, shellName])
+  const prompt = useMemo(
+    () => formatShellPrompt(shellName, cwd),
+    [cwd, shellName]
+  )
   const transcript = useMemo(
     () => buildTranscript(entries, completionMatches),
     [completionMatches, entries]
@@ -202,7 +211,12 @@ export function Terminal({
   }, [onResize])
 
   useEffect(() => {
-    historyRef.current = extractCommandHistory(entries, shellName, cwd, activeCommand)
+    historyRef.current = extractCommandHistory(
+      entries,
+      shellName,
+      cwd,
+      activeCommand
+    )
   }, [activeCommand, cwd, entries, shellName])
 
   useEffect(() => {
@@ -282,7 +296,8 @@ export function Terminal({
           return
         }
 
-        const trailingChars = inputBufferRef.current.length - cursorIndexRef.current
+        const trailingChars =
+          inputBufferRef.current.length - cursorIndexRef.current
         writeToTerminal(
           `\r\x1b[2K${promptRef.current}${inputBufferRef.current}${
             trailingChars > 0 ? `\x1b[${trailingChars}D` : ''
@@ -340,7 +355,9 @@ export function Terminal({
           return
         }
 
-        const request = Promise.resolve(onCompleteRef.current(inputBufferRef.current))
+        const request = Promise.resolve(
+          onCompleteRef.current(inputBufferRef.current)
+        )
           .then((completion) => {
             if (completion.matches.length === 1) {
               const nextBuffer = applyCompletion(
@@ -353,7 +370,9 @@ export function Terminal({
               return
             }
 
-            setCompletionMatches(completion.matches.slice(0, MAX_COMPLETION_MATCHES))
+            setCompletionMatches(
+              completion.matches.slice(0, MAX_COMPLETION_MATCHES)
+            )
           })
           .finally(() => {
             completionRequestRef.current = null
@@ -375,7 +394,9 @@ export function Terminal({
           return
         }
 
-        const request = Promise.resolve(onRunCommandRef.current(command)).finally(() => {
+        const request = Promise.resolve(
+          onRunCommandRef.current(command)
+        ).finally(() => {
           inputRequestRef.current = null
         })
 
@@ -424,19 +445,34 @@ export function Terminal({
         }
 
         if (data === '\u001b[D') {
-          syncShellState(inputBufferRef.current, cursorIndexRef.current - 1, historyIndexRef.current, false)
+          syncShellState(
+            inputBufferRef.current,
+            cursorIndexRef.current - 1,
+            historyIndexRef.current,
+            false
+          )
           renderPromptRef.current?.()
           return
         }
 
         if (data === '\u001b[C') {
-          syncShellState(inputBufferRef.current, cursorIndexRef.current + 1, historyIndexRef.current, false)
+          syncShellState(
+            inputBufferRef.current,
+            cursorIndexRef.current + 1,
+            historyIndexRef.current,
+            false
+          )
           renderPromptRef.current?.()
           return
         }
 
         if (data === '\u001b[H' || data === '\u001b[1~') {
-          syncShellState(inputBufferRef.current, 0, historyIndexRef.current, false)
+          syncShellState(
+            inputBufferRef.current,
+            0,
+            historyIndexRef.current,
+            false
+          )
           renderPromptRef.current?.()
           return
         }
@@ -529,14 +565,23 @@ export function Terminal({
           return
         }
 
-        const cols = Math.max(40, Math.floor(target.clientWidth / APPROX_CHAR_WIDTH))
-        const rows = Math.max(12, Math.floor(target.clientHeight / APPROX_LINE_HEIGHT))
+        const cols = Math.max(
+          40,
+          Math.floor(target.clientWidth / APPROX_CHAR_WIDTH)
+        )
+        const rows = Math.max(
+          12,
+          Math.floor(target.clientHeight / APPROX_LINE_HEIGHT)
+        )
         const signature = `${cols}x${rows}`
 
         if (observedResizeRef.current !== signature) {
           observedResizeRef.current = signature
           xterm.resize(cols, rows)
-          if (interactiveRef.current && reportedResizeRef.current !== signature) {
+          if (
+            interactiveRef.current &&
+            reportedResizeRef.current !== signature
+          ) {
             reportedResizeRef.current = signature
             void onResizeRef.current?.({ cols, rows })
           }
@@ -626,9 +671,11 @@ export function Terminal({
       <div className="mx-auto w-full">
         <div className="border-x border-[#30363d] bg-[#0d1117]">
           <div className="flex items-center justify-between border-b border-[#30363d] px-4 py-3">
-            <div>
-              <div className="text-sm font-semibold text-[#f0f6fc]">Terminal</div>
-              <div className="mt-1 text-xs text-[#7d8590]">
+            <div className="flex items-end gap-1">
+              <div className="h-fit text-sm font-semibold leading-none text-[#f0f6fc]">
+                Terminal
+              </div>
+              <div className="h-fit text-xs leading-none text-[#7d8590]">
                 {shellName} - {cwd}
                 {interactive && activeCommand ? ` - ${activeCommand}` : ''}
               </div>
@@ -652,11 +699,11 @@ export function Terminal({
           </div>
 
           <div className="h-72 px-2 py-2">
-            <div className="h-full rounded-md border border-[#21262d] bg-[#0d1117]">
+            <div className="h-full rounded-md bg-[#0d1117]">
               <div
                 ref={containerRef}
                 onClick={focusTerminal}
-                className="h-full w-full overflow-hidden px-3 py-2 [&_.xterm]:h-full [&_.xterm]:outline-none [&_.xterm-viewport]:overflow-y-auto"
+                className="h-full w-full overflow-hidden px-3 py-2 [&_.xterm-viewport]:overflow-y-auto [&_.xterm]:h-full [&_.xterm]:outline-none"
               />
             </div>
           </div>

@@ -44,16 +44,19 @@ from agno_tools import (
     launch_open_with_target,
     list_topics,
     list_git_branches,
+    open_workspace_file_in_editor,
     persist_native_settings,
     persist_router_profile,
     persist_runtime_profile,
     resize_terminal,
+    revert_workspace_files,
     resolve_workspace_topic,
     resolve_agno_model,
     run_terminal_command,
     send_terminal_input,
     set_project_workspace_root,
     switch_git_branch,
+    unstage_workspace_files,
     workspace_status,
 )
 
@@ -189,6 +192,14 @@ class GitCommitPayload(BaseModel):
     draft: bool = False
 
 
+class FileActionPayload(BaseModel):
+    file_paths: list[str]
+
+
+class OpenEditorPayload(BaseModel):
+    file_path: str
+
+
 def _refresh_primary_agent_model() -> None:
     primary_agent.model = resolve_agno_model()
 
@@ -309,6 +320,22 @@ def integration_git_commit(payload: GitCommitPayload) -> dict[str, object]:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
+@base_app.post("/integration/git/files/revert")
+def integration_git_revert_files(payload: FileActionPayload) -> dict[str, object]:
+    try:
+        return revert_workspace_files(payload.file_paths)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@base_app.post("/integration/git/files/unstage")
+def integration_git_unstage_files(payload: FileActionPayload) -> dict[str, object]:
+    try:
+        return unstage_workspace_files(payload.file_paths)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
 @base_app.get("/integration/open-with")
 def integration_open_with() -> dict[str, object]:
     return get_open_with_targets()
@@ -318,6 +345,14 @@ def integration_open_with() -> dict[str, object]:
 def integration_open_with_launch(payload: OpenWithPayload) -> dict[str, object]:
     try:
         return launch_open_with_target(payload.target_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@base_app.post("/integration/editor/open")
+def integration_open_editor(payload: OpenEditorPayload) -> dict[str, object]:
+    try:
+        return open_workspace_file_in_editor(payload.file_path)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 

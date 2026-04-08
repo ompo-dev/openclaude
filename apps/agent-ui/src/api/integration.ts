@@ -6,6 +6,7 @@ import {
   GitOverview,
   IntegrationConfigPayload,
   IntegrationSnapshot,
+  OpenEditorLaunchResponse,
   OpenWithLaunchResponse,
   OpenWithTargetsResponse,
   SlashCatalogSnapshot,
@@ -261,6 +262,44 @@ export const commitGitChangesAPI = async (
   return response.json()
 }
 
+export const revertGitFilesAPI = async (
+  endpoint: string,
+  filePaths: string[],
+  authToken?: string
+): Promise<GitOverview> => {
+  const response = await fetch(`${endpoint}/integration/git/files/revert`, {
+    method: 'POST',
+    headers: createHeaders(authToken),
+    body: JSON.stringify({ file_paths: filePaths })
+  })
+
+  if (!response.ok) {
+    const detail = await response.text()
+    throw new Error(detail || 'Failed to revert files')
+  }
+
+  return response.json()
+}
+
+export const unstageGitFilesAPI = async (
+  endpoint: string,
+  filePaths: string[],
+  authToken?: string
+): Promise<GitOverview> => {
+  const response = await fetch(`${endpoint}/integration/git/files/unstage`, {
+    method: 'POST',
+    headers: createHeaders(authToken),
+    body: JSON.stringify({ file_paths: filePaths })
+  })
+
+  if (!response.ok) {
+    const detail = await response.text()
+    throw new Error(detail || 'Failed to unstage files')
+  }
+
+  return response.json()
+}
+
 export const getOpenWithTargetsAPI = async (
   endpoint: string,
   authToken?: string
@@ -292,6 +331,25 @@ export const launchOpenWithTargetAPI = async (
   if (!response.ok) {
     const detail = await response.text()
     throw new Error(detail || 'Failed to open external app')
+  }
+
+  return response.json()
+}
+
+export const openFileInEditorAPI = async (
+  endpoint: string,
+  filePath: string,
+  authToken?: string
+): Promise<OpenEditorLaunchResponse> => {
+  const response = await fetch(`${endpoint}/integration/editor/open`, {
+    method: 'POST',
+    headers: createHeaders(authToken),
+    body: JSON.stringify({ file_path: filePath })
+  })
+
+  if (!response.ok) {
+    const detail = await response.text()
+    throw new Error(detail || 'Failed to open file in editor')
   }
 
   return response.json()
