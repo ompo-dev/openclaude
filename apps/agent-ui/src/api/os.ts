@@ -87,23 +87,35 @@ export const getSessionAPI = async (
   dbId?: string,
   authToken?: string
 ) => {
-  // build query string
   const queryParams = new URLSearchParams({ type })
   if (dbId) queryParams.append('db_id', dbId)
+  const headers = createHeaders(authToken)
 
-  const response = await fetch(
+  const primaryResponse = await fetch(
     `${APIRoutes.GetSession(base, sessionId)}?${queryParams.toString()}`,
     {
       method: 'GET',
-      headers: createHeaders(authToken)
+      headers
     }
   )
 
-  if (!response.ok) {
-    throw new Error(`Failed to fetch session: ${response.statusText}`)
+  if (primaryResponse.ok) {
+    return primaryResponse.json()
   }
 
-  return response.json()
+  const fallbackResponse = await fetch(
+    `${APIRoutes.GetSessionRuns(base, sessionId)}?${queryParams.toString()}`,
+    {
+      method: 'GET',
+      headers
+    }
+  )
+
+  if (!fallbackResponse.ok) {
+    throw new Error(`Failed to fetch session: ${fallbackResponse.statusText}`)
+  }
+
+  return fallbackResponse.json()
 }
 
 export const deleteSessionAPI = async (

@@ -161,6 +161,51 @@ export interface SlashCatalogSnapshot {
   plugins: SlashPluginEntry[]
 }
 
+export interface InstalledSkillRecord {
+  name: string
+  path: string
+  scope: string
+  agents: string[]
+  active: boolean
+  slash: string
+  description: string
+  loaded_from: string | null
+}
+
+export interface SkillsSnapshot {
+  generated_at: string
+  workspace_root: string
+  project_root: string
+  items: InstalledSkillRecord[]
+}
+
+export interface SkillsMutationResponse extends SkillsSnapshot {
+  output: string
+}
+
+export interface SkillLibraryEntry {
+  path: string
+  name: string
+  kind: 'file' | 'directory'
+}
+
+export interface SkillLibrarySnapshot {
+  root: string
+  items: SkillLibraryEntry[]
+}
+
+export interface SkillFileSnapshot {
+  root: string
+  path: string
+  content: string
+  updated_at: string
+  format?: 'markdown' | 'yaml' | 'svg' | 'text' | 'image' | 'code'
+  media_type?: string | null
+  encoding?: 'utf-8' | 'base64'
+  preview_data_url?: string | null
+  editable?: boolean
+}
+
 export interface TopicRecord {
   id: string
   name: string
@@ -173,6 +218,31 @@ export interface TopicRecord {
   created_at: string
   updated_at: string
   session_ids: string[]
+}
+
+export interface TopicMutationResponse {
+  item: TopicRecord
+  items: TopicRecord[]
+}
+
+export interface WorkspaceFileSearchEntry {
+  path: string
+  name: string
+}
+
+export interface WorkspaceFileSearchResponse {
+  items: WorkspaceFileSearchEntry[]
+}
+
+export interface WorkspaceSnippetMatch {
+  path: string
+  name: string
+  line_start: number
+  line_end: number
+}
+
+export interface WorkspaceSnippetMatchResponse {
+  match: WorkspaceSnippetMatch | null
 }
 
 export interface WorkspaceChangedFile {

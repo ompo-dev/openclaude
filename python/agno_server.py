@@ -32,10 +32,14 @@ from agno_tools import (
     commit_git_changes,
     complete_terminal_command,
     create_topic,
+    delete_topic,
+    detect_workspace_snippet,
     detach_session_from_topics,
     ensure_state_dir,
     get_git_overview,
     get_integration_snapshot,
+    get_installed_skills_snapshot,
+    list_skill_library,
     get_open_with_targets,
     get_slash_catalog,
     get_terminal_snapshot,
@@ -44,19 +48,26 @@ from agno_tools import (
     launch_open_with_target,
     list_topics,
     list_git_branches,
+    install_skills,
     open_workspace_file_in_editor,
+    open_topic_in_explorer,
     persist_native_settings,
     persist_router_profile,
     persist_runtime_profile,
+    read_skill_library_file,
     resize_terminal,
     revert_workspace_files,
+    remove_skills,
     resolve_workspace_topic,
     resolve_agno_model,
     run_terminal_command,
+    search_workspace_files,
     send_terminal_input,
     set_project_workspace_root,
     switch_git_branch,
     unstage_workspace_files,
+    update_topic,
+    write_skill_library_file,
     workspace_status,
 )
 
@@ -145,6 +156,10 @@ class TopicSessionPayload(BaseModel):
     session_id: str
 
 
+class TopicUpdatePayload(BaseModel):
+    name: str
+
+
 class WorkspaceTargetPayload(BaseModel):
     path: str
     create_topic: bool = True
@@ -200,6 +215,24 @@ class OpenEditorPayload(BaseModel):
     file_path: str
 
 
+class SkillsInstallPayload(BaseModel):
+    source: str
+    skills: list[str] = []
+
+
+class SkillsRemovePayload(BaseModel):
+    skills: list[str]
+
+
+class SkillFileWritePayload(BaseModel):
+    path: str
+    content: str
+
+
+class FileSnippetPayload(BaseModel):
+    snippet: str
+
+
 def _refresh_primary_agent_model() -> None:
     primary_agent.model = resolve_agno_model()
 
@@ -236,6 +269,56 @@ def update_integration_config(payload: IntegrationConfigPayload) -> dict[str, ob
 @base_app.get("/integration/slash-catalog")
 def integration_slash_catalog() -> dict[str, object]:
     return get_slash_catalog()
+
+
+@base_app.get("/integration/skills")
+def integration_skills() -> dict[str, object]:
+    try:
+        return get_installed_skills_snapshot()
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@base_app.get("/integration/skills/library")
+def integration_skills_library() -> dict[str, object]:
+    try:
+        return list_skill_library()
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@base_app.get("/integration/skills/file")
+def integration_skill_file(path: str) -> dict[str, object]:
+    try:
+        return read_skill_library_file(path)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@base_app.put("/integration/skills/file")
+def integration_skill_file_save(payload: SkillFileWritePayload) -> dict[str, object]:
+    try:
+        return write_skill_library_file(payload.path, payload.content)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@base_app.post("/integration/skills/install")
+def integration_skills_install(payload: SkillsInstallPayload) -> dict[str, object]:
+    try:
+        return install_skills(payload.source, payload.skills)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@base_app.post("/integration/skills/remove")
+def integration_skills_remove(payload: SkillsRemovePayload) -> dict[str, object]:
+    try:
+        return remove_skills(payload.skills)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @base_app.post("/integration/activate-model")
@@ -417,6 +500,37 @@ def integration_create_topic(payload: TopicCreatePayload) -> dict[str, object]:
     return {"item": topic, "items": list_topics()}
 
 
+@base_app.put("/integration/topics/{topic_id}")
+def integration_update_topic(topic_id: str, payload: TopicUpdatePayload) -> dict[str, object]:
+    try:
+        topic = update_topic(topic_id, payload.name)
+    except ValueError as exc:
+        status_code = 404 if "not found" in str(exc).lower() else 400
+        raise HTTPException(status_code=status_code, detail=str(exc)) from exc
+
+    return {"item": topic, "items": list_topics()}
+
+
+@base_app.delete("/integration/topics/{topic_id}")
+def integration_delete_topic(topic_id: str) -> dict[str, object]:
+    try:
+        items = delete_topic(topic_id)
+    except ValueError as exc:
+        status_code = 404 if "not found" in str(exc).lower() else 400
+        raise HTTPException(status_code=status_code, detail=str(exc)) from exc
+
+    return {"items": items}
+
+
+@base_app.post("/integration/topics/{topic_id}/open")
+def integration_open_topic(topic_id: str) -> dict[str, object]:
+    try:
+        return open_topic_in_explorer(topic_id)
+    except ValueError as exc:
+        status_code = 404 if "not found" in str(exc).lower() else 400
+        raise HTTPException(status_code=status_code, detail=str(exc)) from exc
+
+
 @base_app.post("/integration/topics/{topic_id}/sessions")
 def integration_assign_session(topic_id: str, payload: TopicSessionPayload) -> dict[str, object]:
     try:
@@ -436,6 +550,22 @@ def integration_detach_session(session_id: str) -> dict[str, object]:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     return {"items": items}
+
+
+@base_app.get("/integration/files/search")
+def integration_search_files(query: str = "") -> dict[str, object]:
+    try:
+        return search_workspace_files(query)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@base_app.post("/integration/files/detect-snippet")
+def integration_detect_snippet(payload: FileSnippetPayload) -> dict[str, object]:
+    try:
+        return detect_workspace_snippet(payload.snippet)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 def build_agent() -> Agent:

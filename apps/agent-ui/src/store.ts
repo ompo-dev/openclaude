@@ -41,7 +41,7 @@ interface Store {
   setMessages: (
     messages: ChatMessage[] | ((prevMessages: ChatMessage[]) => ChatMessage[])
   ) => void
-  chatInputRef: React.RefObject<HTMLTextAreaElement | null>
+  chatInputRef: React.RefObject<HTMLTextAreaElement | HTMLDivElement | null>
   chatInputSeed: string | null
   chatInputSeedNonce: number
   primeChatInput: (value: string) => void
@@ -56,6 +56,14 @@ interface Store {
   setTeams: (teams: TeamDetails[]) => void
   selectedModel: string
   setSelectedModel: (model: string) => void
+  pinnedSessionIds: string[]
+  setPinnedSessionIds: (
+    pinnedSessionIds:
+      | string[]
+      | ((prevPinnedSessionIds: string[]) => string[])
+  ) => void
+  skillsRefreshNonce: number
+  bumpSkillsRefreshNonce: () => void
   mode: 'agent' | 'team'
   setMode: (mode: 'agent' | 'team') => void
   sessionsData: SessionEntry[] | null
@@ -66,9 +74,9 @@ interface Store {
   ) => void
   isSessionsLoading: boolean
   setIsSessionsLoading: (isSessionsLoading: boolean) => void
-  workspaceView: 'chat' | 'project' | 'conversations' | 'settings'
+  workspaceView: 'chat' | 'project' | 'conversations' | 'settings' | 'skills'
   setWorkspaceView: (
-    workspaceView: 'chat' | 'project' | 'conversations' | 'settings'
+    workspaceView: 'chat' | 'project' | 'conversations' | 'settings' | 'skills'
   ) => void
   workspaceContext: WorkspaceContext | null
   setWorkspaceContext: (
@@ -141,6 +149,17 @@ export const useStore = create<Store>()(
       setTeams: (teams) => set({ teams }),
       selectedModel: '',
       setSelectedModel: (selectedModel) => set(() => ({ selectedModel })),
+      pinnedSessionIds: [],
+      setPinnedSessionIds: (pinnedSessionIds) =>
+        set((state) => ({
+          pinnedSessionIds:
+            typeof pinnedSessionIds === 'function'
+              ? pinnedSessionIds(state.pinnedSessionIds)
+              : pinnedSessionIds
+        })),
+      skillsRefreshNonce: 0,
+      bumpSkillsRefreshNonce: () =>
+        set((state) => ({ skillsRefreshNonce: state.skillsRefreshNonce + 1 })),
       mode: 'agent',
       setMode: (mode) => set(() => ({ mode })),
       sessionsData: null,
@@ -189,7 +208,8 @@ export const useStore = create<Store>()(
       partialize: (state) => ({
         selectedEndpoint: state.selectedEndpoint,
         workspaceView: state.workspaceView,
-        selectedTopicId: state.selectedTopicId
+        selectedTopicId: state.selectedTopicId,
+        pinnedSessionIds: state.pinnedSessionIds
       }),
       onRehydrateStorage: () => (state) => {
         state?.setHydrated?.()

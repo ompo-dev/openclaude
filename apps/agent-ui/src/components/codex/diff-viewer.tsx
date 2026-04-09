@@ -22,7 +22,7 @@ import {
   SelectTrigger,
   SelectValue
 } from '@/components/ui/select'
-import type { FileChange } from './message'
+import type { FileChange } from './diff-types'
 
 interface DiffViewerProps {
   isOpen: boolean

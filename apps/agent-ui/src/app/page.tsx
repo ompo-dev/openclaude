@@ -7,30 +7,41 @@ import { toast } from 'sonner'
 
 import ChatSessionSync from '@/components/chat/ChatSessionSync'
 import { CommitModal } from '@/components/codex/commit-modal'
+import type { FileChange } from '@/components/codex/diff-types'
 import { DiffViewer } from '@/components/codex/diff-viewer'
 import { Header } from '@/components/codex/header'
 import { Input } from '@/components/codex/input'
-import { Message, type FileChange, type Message as CodexMessage } from '@/components/codex/message'
+import { Message, type Message as CodexMessage } from '@/components/codex/message'
 import { Sidebar } from '@/components/codex/sidebar'
 import { Terminal } from '@/components/codex/terminal'
 import { ThemeProvider } from '@/components/codex/theme-provider'
+import SkillsView from '@/components/workspace/SkillsView'
 import SettingsView from '@/components/workspace/SettingsView'
 import {
   completeTerminalCommandAPI,
   commitGitChangesAPI,
+  deleteTopicAPI,
+  detectWorkspaceSnippetAPI,
   getGitOverviewAPI,
   getIntegrationConfigAPI,
   getOpenWithTargetsAPI,
+  getSkillFileAPI,
+  getSkillLibraryAPI,
   getTerminalSnapshotAPI,
   launchOpenWithTargetAPI,
+  openTopicInExplorerAPI,
   openFileInEditorAPI,
   pickWorkspaceFolderAPI,
   revertGitFilesAPI,
   resizeTerminalAPI,
   runTerminalCommandAPI,
+  saveSkillFileAPI,
+  searchWorkspaceFilesAPI,
   sendTerminalInputAPI,
-  unstageGitFilesAPI
+  unstageGitFilesAPI,
+  updateTopicAPI
 } from '@/api/integration'
+import { deleteSessionAPI } from '@/api/os'
 import useAIChatStreamHandler from '@/hooks/useAIStreamHandler'
 import useChatActions from '@/hooks/useChatActions'
 import useSessionLoader from '@/hooks/useSessionLoader'
@@ -40,6 +51,8 @@ import type {
   GitOverview,
   IntegrationSnapshot,
   OpenWithTarget,
+  SkillFileSnapshot,
+  SkillLibraryEntry,
   TerminalSnapshot,
   WorkspaceChangedFile
 } from '@/types/integration'
@@ -146,9 +159,14 @@ function CodexApp() {
   const sessionsData = useStore((state) => state.sessionsData)
   const topics = useStore((state) => state.topics)
   const workspaceContext = useStore((state) => state.workspaceContext)
+  const skillsRefreshNonce = useStore((state) => state.skillsRefreshNonce)
+  const bumpSkillsRefreshNonce = useStore(
+    (state) => state.bumpSkillsRefreshNonce
+  )
+  const pinnedSessionIds = useStore((state) => state.pinnedSessionIds)
+  const setPinnedSessionIds = useStore((state) => state.setPinnedSessionIds)
   const selectedTopicId = useStore((state) => state.selectedTopicId)
   const setSelectedTopicId = useStore((state) => state.setSelectedTopicId)
-  const primeChatInput = useStore((state) => state.primeChatInput)
   const branches = useStore((state) => state.branches)
   const isBranchesLoading = useStore((state) => state.isBranchesLoading)
   const workspaceView = useStore((state) => state.workspaceView)
@@ -166,7 +184,8 @@ function CodexApp() {
     syncWorkspaceTarget,
     refreshWorkspaceContext,
     refreshBranches,
-    refreshTopics
+    refreshTopics,
+    detachSessionFromTopics
   } = useWorkspaceData()
 
   const [expandedProjectIds, setExpandedProjectIds] = useState<string[]>([])
@@ -180,10 +199,19 @@ function CodexApp() {
     useState<IntegrationSnapshot | null>(null)
   const [openWithTargets, setOpenWithTargets] = useState<OpenWithTarget[]>([])
   const [terminalPollUntil, setTerminalPollUntil] = useState(0)
+  const [skillLibrary, setSkillLibrary] = useState<SkillLibraryEntry[]>([])
+  const [isSkillLibraryLoading, setIsSkillLibraryLoading] = useState(false)
+  const [selectedSkillFilePath, setSelectedSkillFilePath] = useState<string | null>(null)
+  const [selectedSkillFile, setSelectedSkillFile] = useState<SkillFileSnapshot | null>(
+    null
+  )
+  const [isSkillFileLoading, setIsSkillFileLoading] = useState(false)
+  const [isSkillFileSaving, setIsSkillFileSaving] = useState(false)
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const terminalLastSignatureRef = useRef<string>('')
   const terminalStablePollsRef = useRef(0)
   const terminalLastResizeRef = useRef<string>('')
+  const lastSkillsWorkspaceRef = useRef<string | null>(null)
 
   const extendTerminalPolling = useCallback((durationMs: number) => {
     const target = Date.now() + durationMs
@@ -237,6 +265,78 @@ function CodexApp() {
   }, [selectedTopicId, topics, workspaceContext?.project_root])
 
   useEffect(() => {
+    const projectRoot = workspaceContext?.project_root ?? null
+    if (!projectRoot) return
+    if (lastSkillsWorkspaceRef.current === projectRoot) return
+
+    lastSkillsWorkspaceRef.current = projectRoot
+    bumpSkillsRefreshNonce()
+  }, [bumpSkillsRefreshNonce, workspaceContext?.project_root])
+
+  const loadSkillLibrary = useCallback(async () => {
+    setIsSkillLibraryLoading(true)
+    try {
+      const nextLibrary = await getSkillLibraryAPI(selectedEndpoint, authToken)
+      setSkillLibrary(nextLibrary.items)
+    } catch (error) {
+      toast.error(
+        error instanceof Error ? error.message : 'Falha ao carregar skills'
+      )
+      setSkillLibrary([])
+    } finally {
+      setIsSkillLibraryLoading(false)
+    }
+  }, [authToken, selectedEndpoint])
+
+  useEffect(() => {
+    void loadSkillLibrary()
+  }, [loadSkillLibrary, skillsRefreshNonce])
+
+  const openSkillFile = useCallback(
+    async (path: string) => {
+      setWorkspaceView('skills')
+      setSelectedSkillFilePath(path)
+      setIsSkillFileLoading(true)
+      try {
+        const nextFile = await getSkillFileAPI(selectedEndpoint, path, authToken)
+        setSelectedSkillFile(nextFile)
+      } catch (error) {
+        toast.error(
+          error instanceof Error ? error.message : 'Falha ao abrir arquivo de skill'
+        )
+      } finally {
+        setIsSkillFileLoading(false)
+      }
+    },
+    [authToken, selectedEndpoint, setWorkspaceView]
+  )
+
+  const saveSkillFile = useCallback(
+    async (content: string) => {
+      if (!selectedSkillFilePath) return
+
+      setIsSkillFileSaving(true)
+      try {
+        const nextFile = await saveSkillFileAPI(
+          selectedEndpoint,
+          { path: selectedSkillFilePath, content },
+          authToken
+        )
+        setSelectedSkillFile(nextFile)
+        bumpSkillsRefreshNonce()
+        toast.success('Skill salva')
+      } catch (error) {
+        toast.error(
+          error instanceof Error ? error.message : 'Falha ao salvar skill'
+        )
+      } finally {
+        setIsSkillFileSaving(false)
+      }
+    },
+    [authToken, bumpSkillsRefreshNonce, selectedSkillFilePath, selectedEndpoint]
+  )
+
+  useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [messages, isLoading])
 
@@ -279,20 +379,36 @@ function CodexApp() {
       isExpanded: expandedProjectIds.includes(topic.id),
       topics: entries
         .filter((entry) => topic.session_ids.includes(entry.session_id))
+        .sort((left, right) => {
+          const leftPinned = pinnedSessionIds.includes(left.session_id)
+          const rightPinned = pinnedSessionIds.includes(right.session_id)
+          if (leftPinned !== rightPinned) {
+            return leftPinned ? -1 : 1
+          }
+
+          return (right.updated_at ?? right.created_at) - (left.updated_at ?? left.created_at)
+        })
         .map((entry) => ({
           id: entry.session_id,
           title: entry.session_name,
-          updatedAt: formatRelativeAge(entry.updated_at ?? entry.created_at)
+          updatedAt: formatRelativeAge(entry.updated_at ?? entry.created_at),
+          pinned: pinnedSessionIds.includes(entry.session_id)
         }))
       }))
-  }, [expandedProjectIds, sessionsData, topics])
+  }, [expandedProjectIds, pinnedSessionIds, sessionsData, topics])
 
   const visibleMessages = useMemo(() => {
     if (!isLoading) return messages
     if (messages.length === 0) return messages
 
     const last = messages[messages.length - 1]
-    if (last.role === 'agent' && !last.content) {
+    if (
+      last.role === 'agent' &&
+      !last.content &&
+      !(last.tool_calls && last.tool_calls.length > 0) &&
+      !(last.workspace_snapshot?.changed_files?.length) &&
+      !(last.extra_data?.reasoning_steps?.length)
+    ) {
       return messages.slice(0, -1)
     }
     return messages
@@ -311,6 +427,7 @@ function CodexApp() {
           hour: '2-digit',
           minute: '2-digit'
         }),
+        workspaceFiles: message.workspace_snapshot?.changed_files,
         fileChanges: message.workspace_snapshot?.changed_files
           ? mapWorkspaceFilesToChanges(message.workspace_snapshot.changed_files)
           : undefined
@@ -455,13 +572,142 @@ function CodexApp() {
     )
   }, [])
 
-  const handleUseSkill = useCallback(
-    (slash: string) => {
-      setWorkspaceView('chat')
-      primeChatInput(slash)
-      focusChatInput()
+  const handleTogglePinnedConversation = useCallback(
+    (targetSessionId: string) => {
+      setPinnedSessionIds((current) =>
+        current.includes(targetSessionId)
+          ? current.filter((id) => id !== targetSessionId)
+          : [targetSessionId, ...current]
+      )
     },
-    [focusChatInput, primeChatInput, setWorkspaceView]
+    [setPinnedSessionIds]
+  )
+
+  const handleDeleteConversation = useCallback(
+    async (targetSessionId: string) => {
+      if (!(agentId || teamId || dbId)) return
+
+      try {
+        const response = await deleteSessionAPI(
+          selectedEndpoint,
+          dbId ?? '',
+          targetSessionId,
+          authToken
+        )
+
+        if (!response.ok) {
+          const detail = await response.text()
+          throw new Error(detail || 'Falha ao excluir conversa')
+        }
+
+        useStore.getState().setSessionsData((current) =>
+          (current ?? []).filter((session) => session.session_id !== targetSessionId)
+        )
+        setPinnedSessionIds((current) =>
+          current.filter((sessionId) => sessionId !== targetSessionId)
+        )
+
+        try {
+          await detachSessionFromTopics(targetSessionId)
+        } catch {
+          // topic cleanup is best effort
+        }
+
+        if (sessionId === targetSessionId) {
+          await setSessionId(null)
+          clearChat()
+        }
+
+        await refreshTopics()
+        toast.success('Conversa excluida')
+      } catch (error) {
+        toast.error(
+          error instanceof Error ? error.message : 'Falha ao excluir conversa'
+        )
+      }
+    },
+    [
+      agentId,
+      authToken,
+      clearChat,
+      dbId,
+      detachSessionFromTopics,
+      refreshTopics,
+      selectedEndpoint,
+      sessionId,
+      setPinnedSessionIds,
+      setSessionId,
+      teamId
+    ]
+  )
+
+  const handleOpenTopicInExplorer = useCallback(
+    async (topicId: string) => {
+      try {
+        await openTopicInExplorerAPI(selectedEndpoint, topicId, authToken)
+      } catch (error) {
+        toast.error(
+          error instanceof Error ? error.message : 'Falha ao abrir topico no explorer'
+        )
+      }
+    },
+    [authToken, selectedEndpoint]
+  )
+
+  const handleRenameTopic = useCallback(
+    async (topicId: string) => {
+      const currentTopicEntry = topics.find((topic) => topic.id === topicId)
+      if (!currentTopicEntry) return
+
+      const nextName = window.prompt('Novo nome do topico', currentTopicEntry.name)
+      if (!nextName || nextName.trim() === currentTopicEntry.name) return
+
+      try {
+        const response = await updateTopicAPI(
+          selectedEndpoint,
+          topicId,
+          { name: nextName.trim() },
+          authToken
+        )
+
+        useStore.getState().setTopics(response.items)
+        setSelectedTopicId(response.item.id)
+        toast.success('Topico atualizado')
+      } catch (error) {
+        toast.error(
+          error instanceof Error ? error.message : 'Falha ao atualizar topico'
+        )
+      }
+    },
+    [authToken, selectedEndpoint, setSelectedTopicId, topics]
+  )
+
+  const handleDeleteTopic = useCallback(
+    async (topicId: string) => {
+      const currentTopicEntry = topics.find((topic) => topic.id === topicId)
+      if (!currentTopicEntry) return
+
+      const confirmed = window.confirm(
+        `Excluir o topico "${currentTopicEntry.name}"?`
+      )
+      if (!confirmed) return
+
+      try {
+        const response = await deleteTopicAPI(selectedEndpoint, topicId, authToken)
+        useStore.getState().setTopics(response.items)
+        setExpandedProjectIds((current) => current.filter((id) => id !== topicId))
+
+        if (selectedTopicId === topicId) {
+          setSelectedTopicId(null)
+        }
+        toast.success('Topico excluido')
+      } catch (error) {
+        toast.error(
+          error instanceof Error ? error.message : 'Falha ao excluir topico'
+        )
+      }
+    },
+    [authToken, selectedEndpoint, selectedTopicId, setSelectedTopicId, topics]
   )
 
   const handleSendMessage = useCallback(
@@ -481,6 +727,18 @@ function CodexApp() {
       refreshTopics,
       refreshWorkspaceContext
     ]
+  )
+
+  const handleSearchWorkspaceFiles = useCallback(
+    (query: string) =>
+      searchWorkspaceFilesAPI(selectedEndpoint, query, authToken),
+    [authToken, selectedEndpoint]
+  )
+
+  const handleDetectWorkspaceSnippet = useCallback(
+    (snippet: string) =>
+      detectWorkspaceSnippetAPI(selectedEndpoint, snippet, authToken),
+    [authToken, selectedEndpoint]
   )
 
   const handleSendTerminalInput = useCallback(
@@ -778,6 +1036,10 @@ function CodexApp() {
           projects={projects}
           currentSessionId={sessionId || null}
           currentProjectId={currentProjectId}
+          currentSkillFilePath={selectedSkillFilePath}
+          pinnedSessionIds={pinnedSessionIds}
+          skillLibrary={skillLibrary}
+          isSkillsLoading={isSkillLibraryLoading}
           onTopicSelect={handleTopicSelect}
           onNewConversation={(projectId) => {
             void handleNewConversation(projectId)
@@ -785,14 +1047,41 @@ function CodexApp() {
           onAddProjectTopic={() => {
             void handleAddTopic()
           }}
-          onUseSkill={handleUseSkill}
+          onOpenSkillFile={(path) => {
+            void openSkillFile(path)
+          }}
+          onRefreshSkills={() => {
+            void loadSkillLibrary()
+          }}
+          onDeleteConversation={(targetSessionId) => {
+            void handleDeleteConversation(targetSessionId)
+          }}
+          onTogglePinnedConversation={handleTogglePinnedConversation}
           onToggleProject={handleToggleProject}
+          onOpenTopicInExplorer={(topicId) => {
+            void handleOpenTopicInExplorer(topicId)
+          }}
+          onRenameTopic={(topicId) => {
+            void handleRenameTopic(topicId)
+          }}
+          onDeleteTopic={(topicId) => {
+            void handleDeleteTopic(topicId)
+          }}
           onOpenSettings={() => setWorkspaceView('settings')}
         />
 
         <div className="flex min-w-0 flex-1 flex-col">
           {workspaceView === 'settings' ? (
             <SettingsView />
+          ) : workspaceView === 'skills' ? (
+            <SkillsView
+              file={selectedSkillFile}
+              isLoading={isSkillFileLoading}
+              isSaving={isSkillFileSaving}
+              onSave={(content) => {
+                void saveSkillFile(content)
+              }}
+            />
           ) : (
             <>
               <Header
@@ -873,12 +1162,15 @@ function CodexApp() {
                     }}
                     isLoading={isLoading}
                     branch={workspaceContext?.branch || 'main'}
+                    skillLibrary={skillLibrary}
                     models={modelOptions}
                     currentModel={
                       integrationSnapshot?.runtime.model ||
                       useStore.getState().selectedModel ||
                       'Modelo'
                     }
+                    searchFiles={handleSearchWorkspaceFiles}
+                    detectSnippet={handleDetectWorkspaceSnippet}
                   />
 
                   <Terminal

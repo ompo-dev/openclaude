@@ -4,6 +4,8 @@ export const APIRoutes = {
   Status: (agentOSUrl: string) => `${agentOSUrl}/healthz`,
   GetSessions: (agentOSUrl: string) => `${agentOSUrl}/sessions`,
   GetSession: (agentOSUrl: string, sessionId: string) =>
+    `${agentOSUrl}/sessions/${sessionId}`,
+  GetSessionRuns: (agentOSUrl: string, sessionId: string) =>
     `${agentOSUrl}/sessions/${sessionId}/runs`,
 
   DeleteSession: (agentOSUrl: string, sessionId: string) =>

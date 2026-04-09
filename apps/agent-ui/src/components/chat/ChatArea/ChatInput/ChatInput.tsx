@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { ArrowUp, Mic } from 'lucide-react'
 import { toast } from 'sonner'
 import { useQueryState } from 'nuqs'
@@ -29,6 +29,7 @@ const buildCatalogMessage = (
 
 const ChatInput = () => {
   const { chatInputRef, selectedEndpoint, authToken } = useStore()
+  const textareaRef = useRef<HTMLTextAreaElement | null>(null)
   const { addMessage } = useChatActions()
   const { handleStreamResponse } = useAIChatStreamHandler()
   const [selectedAgent] = useQueryState('agent')
@@ -41,14 +42,18 @@ const ChatInput = () => {
   const isStreaming = useStore((state) => state.isStreaming)
 
   useEffect(() => {
-    if (!chatInputRef.current) return
+    chatInputRef.current = textareaRef.current
+  }, [chatInputRef])
 
-    chatInputRef.current.style.height = 'auto'
-    chatInputRef.current.style.height = `${Math.min(
-      chatInputRef.current.scrollHeight,
+  useEffect(() => {
+    if (!textareaRef.current) return
+
+    textareaRef.current.style.height = 'auto'
+    textareaRef.current.style.height = `${Math.min(
+      textareaRef.current.scrollHeight,
       180
     )}px`
-  }, [chatInputRef, inputMessage])
+  }, [inputMessage])
 
   useEffect(() => {
     void (async () => {
@@ -266,7 +271,7 @@ const ChatInput = () => {
           ) : null}
 
           <textarea
-            ref={chatInputRef}
+            ref={textareaRef}
             value={inputMessage}
             onChange={(event) => setInputMessage(event.target.value)}
             onKeyDown={(event) => {

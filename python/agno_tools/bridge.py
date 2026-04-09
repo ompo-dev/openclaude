@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import base64
 import json
+import mimetypes
 import os
 import re
 import shutil
@@ -133,6 +135,36 @@ STANDARD_AGENT_ROUTING_KEYS = (
     "frontend-dev",
 )
 MAX_BRANCHES = 80
+SKILLS_AGENT_NAME = "codex"
+MAX_FILE_SEARCH_RESULTS = 40
+MAX_SNIPPET_SCAN_FILE_BYTES = 512_000
+IGNORED_WORKSPACE_DIR_NAMES = {
+    ".git",
+    ".next",
+    ".turbo",
+    "node_modules",
+    "dist",
+    "build",
+    "__pycache__",
+    ".venv",
+    ".venv-agno",
+}
+IGNORED_WORKSPACE_FILE_SUFFIXES = {
+    ".png",
+    ".jpg",
+    ".jpeg",
+    ".gif",
+    ".webp",
+    ".bmp",
+    ".ico",
+    ".pdf",
+    ".zip",
+    ".tar",
+    ".gz",
+    ".exe",
+    ".dll",
+    ".bin",
+}
 
 _ANSI_OSC_PATTERN = re.compile(r"\x1b\][^\x07]*(?:\x07|\x1b\\)")
 _ANSI_CSI_PATTERN = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
@@ -1627,6 +1659,321 @@ def detach_session_from_topics(session_id: str) -> list[dict[str, Any]]:
         save_topics_payload(payload)
 
     return list_topics()
+
+
+def update_topic(topic_id: str, name: str) -> dict[str, Any]:
+    normalized_topic_id = _trimmed(topic_id)
+    normalized_name = _trimmed(name)
+    if not normalized_topic_id:
+        raise ValueError("topic_id is required.")
+    if not normalized_name:
+        raise ValueError("Topic name cannot be empty.")
+
+    payload = load_topics_payload()
+    now = datetime.now(timezone.utc).isoformat()
+    updated_topic: dict[str, Any] | None = None
+
+    for topic in payload["topics"]:
+        if topic["id"] != normalized_topic_id:
+            continue
+        topic["name"] = normalized_name
+        topic["slug"] = _slugify(normalized_name)
+        topic["updated_at"] = now
+        updated_topic = topic
+        break
+
+    if updated_topic is None:
+        raise ValueError(f"Topic not found: {normalized_topic_id}")
+
+    save_topics_payload(payload)
+    return updated_topic
+
+
+def delete_topic(topic_id: str) -> list[dict[str, Any]]:
+    normalized_topic_id = _trimmed(topic_id)
+    if not normalized_topic_id:
+        raise ValueError("topic_id is required.")
+
+    payload = load_topics_payload()
+    topics = payload["topics"]
+    next_topics = [topic for topic in topics if topic["id"] != normalized_topic_id]
+    if len(next_topics) == len(topics):
+        raise ValueError(f"Topic not found: {normalized_topic_id}")
+
+    save_topics_payload({"topics": next_topics})
+    return list_topics()
+
+
+def _open_path_in_system_file_browser(target_path: Path) -> dict[str, Any]:
+    resolved_path = target_path.expanduser().resolve()
+    if not resolved_path.exists() or not resolved_path.is_dir():
+        raise ValueError(f"Folder not found: {resolved_path}")
+
+    if os.name == "nt":
+        command = ["explorer.exe", str(resolved_path)]
+        label = "Explorer"
+    elif sys.platform == "darwin":
+        command = ["open", str(resolved_path)]
+        label = "Finder"
+    else:
+        command = ["xdg-open", str(resolved_path)]
+        label = "Files"
+
+    try:
+        subprocess.Popen(
+            command,
+            cwd=str(resolved_path),
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+    except Exception as exc:
+        raise ValueError(f"Failed to open folder in file browser: {exc}") from exc
+
+    return {"target": label.lower(), "path": str(resolved_path)}
+
+
+def open_topic_in_explorer(topic_id: str) -> dict[str, Any]:
+    normalized_topic_id = _trimmed(topic_id)
+    if not normalized_topic_id:
+        raise ValueError("topic_id is required.")
+
+    topic = next(
+        (item for item in list_topics() if item.get("id") == normalized_topic_id),
+        None,
+    )
+    if topic is None:
+        raise ValueError(f"Topic not found: {normalized_topic_id}")
+
+    project_root = _trimmed(topic.get("project_root"))
+    if not project_root:
+        raise ValueError("Topic does not have a valid project_root.")
+
+    return _open_path_in_system_file_browser(Path(project_root))
+
+
+def _list_workspace_file_paths(root: Path) -> list[str]:
+    git_files_output = _run_git(
+        ["ls-files", "--cached", "--others", "--exclude-standard"],
+        cwd=root,
+    )
+    git_files = [
+        line.strip().replace("\\", "/")
+        for line in git_files_output.splitlines()
+        if line.strip()
+    ]
+    if git_files:
+        return git_files
+
+    collected: list[str] = []
+    for current_root, dir_names, file_names in os.walk(root):
+        dir_names[:] = [
+            name for name in dir_names if name not in IGNORED_WORKSPACE_DIR_NAMES
+        ]
+        for file_name in file_names:
+            absolute_path = Path(current_root) / file_name
+            if absolute_path.suffix.lower() in IGNORED_WORKSPACE_FILE_SUFFIXES:
+                continue
+            collected.append(absolute_path.relative_to(root).as_posix())
+    return sorted(collected)
+
+
+def search_workspace_files(query: str) -> dict[str, Any]:
+    normalized_query = (_trimmed(query) or "").lower()
+    if not normalized_query:
+        return {"items": []}
+
+    workspace_root = get_project_workspace_root().resolve()
+    matches: list[dict[str, str]] = []
+    for relative_path in _list_workspace_file_paths(workspace_root):
+        normalized_path = relative_path.lower()
+        name = Path(relative_path).name
+        if normalized_query not in normalized_path and normalized_query not in name.lower():
+            continue
+        matches.append({"path": relative_path, "name": name})
+        if len(matches) >= MAX_FILE_SEARCH_RESULTS:
+            break
+
+    return {"items": matches}
+
+
+def _should_scan_snippet_file(path: Path) -> bool:
+    if path.suffix.lower() in IGNORED_WORKSPACE_FILE_SUFFIXES:
+        return False
+    try:
+        return path.stat().st_size <= MAX_SNIPPET_SCAN_FILE_BYTES
+    except OSError:
+        return False
+
+
+def _normalize_snippet_line(line: str) -> str:
+    return re.sub(r"\s+", " ", line.strip())
+
+
+def _clean_snippet_text(snippet: str) -> str:
+    normalized = snippet.replace("\r\n", "\n").strip("\n")
+    normalized = normalized.strip()
+
+    if (
+        len(normalized) >= 2
+        and normalized[0] == normalized[-1]
+        and normalized[0] in {'"', "'"}
+    ):
+        normalized = normalized[1:-1].strip()
+
+    return normalized
+
+
+def _line_matches_snippet(
+    content_line: str,
+    snippet_line: str,
+    *,
+    allow_partial: bool,
+) -> bool:
+    normalized_content = _normalize_snippet_line(content_line)
+    normalized_snippet = _normalize_snippet_line(snippet_line)
+
+    if not normalized_snippet:
+        return True
+
+    if normalized_content == normalized_snippet:
+        return True
+
+    if allow_partial and len(normalized_snippet) >= 6:
+        return (
+            normalized_snippet in normalized_content
+            or normalized_content in normalized_snippet
+        )
+
+    return False
+
+
+def _find_snippet_line_range_fuzzy(
+    content: str, snippet: str
+) -> tuple[int, int] | None:
+    snippet_lines = [line for line in snippet.splitlines() if line.strip()]
+    if len(snippet_lines) < 2:
+        return None
+
+    content_lines = content.splitlines()
+    minimum_matches = max(2, min(len(snippet_lines), 4))
+
+    for start_index in range(len(content_lines)):
+        matched_lines = 0
+        consumed_lines = 0
+
+        for offset, snippet_line in enumerate(snippet_lines):
+            content_index = start_index + offset
+            if content_index >= len(content_lines):
+                break
+
+            allow_partial = offset == 0 or offset == len(snippet_lines) - 1
+            if _line_matches_snippet(
+                content_lines[content_index],
+                snippet_line,
+                allow_partial=allow_partial,
+            ):
+                matched_lines += 1
+                consumed_lines = offset + 1
+                continue
+
+            if matched_lines >= minimum_matches:
+                line_start = start_index + 1
+                line_end = line_start + max(consumed_lines - 1, 0)
+                return line_start, line_end
+
+            matched_lines = 0
+            consumed_lines = 0
+            break
+
+        if matched_lines >= minimum_matches:
+            line_start = start_index + 1
+            line_end = line_start + max(consumed_lines - 1, 0)
+            return line_start, line_end
+
+    return None
+
+
+def _find_snippet_line_range(content: str, snippet: str) -> tuple[int, int] | None:
+    direct_index = content.find(snippet)
+    if direct_index >= 0:
+        line_start = content.count("\n", 0, direct_index) + 1
+        line_end = line_start + max(snippet.count("\n"), 0)
+        return line_start, line_end
+
+    snippet_lines = [line.rstrip() for line in snippet.splitlines() if line.strip()]
+    if not snippet_lines:
+        return None
+
+    content_lines = content.splitlines()
+    total_lines = len(snippet_lines)
+    for index in range(0, max(len(content_lines) - total_lines + 1, 0)):
+        window = [line.rstrip() for line in content_lines[index : index + total_lines]]
+        if window == snippet_lines:
+            line_start = index + 1
+            line_end = line_start + total_lines - 1
+            return line_start, line_end
+
+    return _find_snippet_line_range_fuzzy(content, snippet)
+
+
+def _extract_snippet_markers(snippet: str) -> list[str]:
+    markers: list[str] = []
+    for line in snippet.splitlines():
+        normalized = _normalize_snippet_line(line)
+        if len(normalized) < 4:
+            continue
+        markers.append(normalized.lower())
+        if len(markers) >= 4:
+            break
+
+    return markers
+
+
+def detect_workspace_snippet(snippet: str) -> dict[str, Any]:
+    normalized_snippet = snippet if isinstance(snippet, str) else ""
+    normalized_snippet = _clean_snippet_text(normalized_snippet)
+    if len(normalized_snippet.strip()) < 12:
+        return {"match": None}
+
+    workspace_root = get_project_workspace_root().resolve()
+    markers = _extract_snippet_markers(normalized_snippet)
+    if not markers:
+        return {"match": None}
+
+    for relative_path in _list_workspace_file_paths(workspace_root):
+        absolute_path = (workspace_root / relative_path).resolve()
+        if not _should_scan_snippet_file(absolute_path):
+            continue
+
+        try:
+            raw_bytes = absolute_path.read_bytes()
+        except OSError:
+            continue
+
+        try:
+            content = raw_bytes.decode("utf-8")
+        except UnicodeDecodeError:
+            continue
+
+        lowered_content = content.lower()
+        if not any(marker in lowered_content for marker in markers):
+            continue
+
+        match_range = _find_snippet_line_range(content, normalized_snippet)
+        if match_range is None:
+            continue
+
+        line_start, line_end = match_range
+        return {
+            "match": {
+                "path": relative_path,
+                "name": absolute_path.name,
+                "line_start": line_start,
+                "line_end": line_end,
+            }
+        }
+
+    return {"match": None}
 
 
 def resolve_workspace_topic(create_if_missing: bool = True) -> dict[str, Any] | None:
@@ -3148,7 +3495,7 @@ def get_slash_catalog() -> dict[str, Any]:
     try:
         completed = subprocess.run(
             ["bun", str(OPENCLAUDE_WEB_CATALOG_PATH)],
-            cwd=str(WORKSPACE_ROOT),
+            cwd=str(get_project_workspace_root()),
             capture_output=True,
             text=True,
             encoding="utf-8",
@@ -3170,6 +3517,296 @@ def get_slash_catalog() -> dict[str, Any]:
         return _fallback_slash_catalog()
 
     return payload
+
+
+def _run_skills_cli(args: list[str], timeout: int = 180) -> subprocess.CompletedProcess[str]:
+    npx_executable = (
+        shutil.which("npx.cmd")
+        or shutil.which("npx")
+        or r"C:\Program Files\nodejs\npx.cmd"
+    )
+    completed = subprocess.run(
+        [npx_executable, "--yes", "skills", *args],
+        cwd=str(get_project_workspace_root()),
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=timeout,
+        env={**os.environ, "FORCE_COLOR": "0", "NO_COLOR": "1"},
+    )
+    return completed
+
+
+def _sanitize_cli_output(stdout: str, stderr: str = "") -> str:
+    chunks = [part for part in (_strip_terminal_ansi(stdout), _strip_terminal_ansi(stderr)) if part]
+    return "\n".join(chunk.strip() for chunk in chunks if chunk.strip()).strip()
+
+
+def _extract_json_suffix(text: str) -> Any:
+    cleaned = text.strip()
+    if not cleaned:
+        return None
+
+    try:
+        return json.loads(cleaned)
+    except json.JSONDecodeError:
+        pass
+
+    list_index = cleaned.find("[")
+    object_index = cleaned.find("{")
+    candidates = [index for index in (list_index, object_index) if index >= 0]
+    if not candidates:
+        return None
+
+    start = min(candidates)
+    try:
+        return json.loads(cleaned[start:])
+    except json.JSONDecodeError:
+        return None
+
+
+def get_installed_skills_snapshot() -> dict[str, Any]:
+    completed = _run_skills_cli(["ls", "--global", "--json"], timeout=60)
+    output = _sanitize_cli_output(completed.stdout, completed.stderr)
+    if completed.returncode != 0:
+        raise ValueError(output or "Failed to list installed skills.")
+
+    payload = _extract_json_suffix(output)
+    if not isinstance(payload, list):
+        payload = []
+
+    catalog = get_slash_catalog()
+    active_skill_map = {
+        str(entry.get("name")): entry
+        for entry in catalog.get("skills", [])
+        if isinstance(entry, dict) and entry.get("name")
+    }
+
+    items: list[dict[str, Any]] = []
+    for raw_entry in payload:
+        if not isinstance(raw_entry, dict):
+            continue
+
+        name = _trimmed(raw_entry.get("name"))
+        path_value = _trimmed(raw_entry.get("path"))
+        if not name or not path_value:
+            continue
+
+        active_entry = active_skill_map.get(name)
+        agents = raw_entry.get("agents")
+        items.append(
+            {
+                "name": name,
+                "path": path_value,
+                "scope": _trimmed(raw_entry.get("scope")) or "project",
+                "agents": agents if isinstance(agents, list) else [],
+                "active": active_entry is not None,
+                "slash": active_entry.get("slash") if active_entry else f"/{name}",
+                "description": active_entry.get("description") if active_entry else "",
+                "loaded_from": active_entry.get("loaded_from") if active_entry else None,
+            }
+        )
+
+    items.sort(key=lambda item: item["name"].lower())
+    return {
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "workspace_root": str(get_project_workspace_root()),
+        "project_root": str(get_project_workspace_root()),
+        "items": items,
+    }
+
+
+def get_global_skills_root() -> Path:
+    codex_home = Path(
+        os.getenv("CODEX_HOME") or str(Path.home() / ".codex")
+    ).expanduser().resolve()
+    return (codex_home / "skills").resolve()
+
+
+def resolve_skill_library_path(path: str, *, allow_missing: bool = False) -> Path:
+    root = get_global_skills_root()
+    relative_path = _trimmed(path) or "."
+    candidate = (root / relative_path).resolve()
+
+    if candidate != root and root not in candidate.parents:
+        raise ValueError(f"Path escapes skills root: {path}")
+
+    if not allow_missing and not candidate.exists():
+        raise FileNotFoundError(f"Skill path not found: {path}")
+
+    return candidate
+
+
+def list_skill_library() -> dict[str, Any]:
+    root = get_global_skills_root()
+    if not root.exists():
+        return {"root": str(root), "items": []}
+
+    ignored_names = {".git", "node_modules", "__pycache__", ".next", "dist", "build"}
+    ignored_file_names = {".ds_store"}
+    items: list[dict[str, str]] = []
+
+    for entry in sorted(
+        root.rglob("*"),
+        key=lambda item: (item.is_file(), str(item).lower()),
+    ):
+        if any(part in ignored_names for part in entry.parts):
+            continue
+        if entry.is_file() and (
+            entry.name.lower() in ignored_file_names
+            or entry.name.startswith(".codex-")
+        ):
+            continue
+
+        relative_path = entry.relative_to(root).as_posix()
+        items.append(
+            {
+                "path": relative_path,
+                "name": entry.name,
+                "kind": "directory" if entry.is_dir() else "file",
+            }
+        )
+
+    return {"root": str(root), "items": items}
+
+
+def read_skill_library_file(path: str) -> dict[str, Any]:
+    root = get_global_skills_root()
+    target = resolve_skill_library_path(path)
+    if target.is_dir():
+        raise ValueError(f"Skill path is a directory: {path}")
+
+    relative_path = target.relative_to(root).as_posix()
+    suffix = target.suffix.lower()
+    media_type = mimetypes.guess_type(target.name)[0]
+    updated_at = datetime.fromtimestamp(
+        target.stat().st_mtime, tz=timezone.utc
+    ).isoformat()
+
+    is_raster_image = suffix in {
+        ".png",
+        ".jpg",
+        ".jpeg",
+        ".gif",
+        ".webp",
+        ".bmp",
+        ".ico",
+    } or (
+        bool(media_type)
+        and media_type.startswith("image/")
+        and media_type != "image/svg+xml"
+    )
+
+    if is_raster_image:
+        raw_bytes = target.read_bytes()
+        encoded = base64.b64encode(raw_bytes).decode("ascii")
+        return {
+            "root": str(root),
+            "path": relative_path,
+            "content": "",
+            "updated_at": updated_at,
+            "format": "image",
+            "media_type": media_type or "application/octet-stream",
+            "encoding": "base64",
+            "preview_data_url": f"data:{media_type or 'application/octet-stream'};base64,{encoded}",
+            "editable": False,
+        }
+
+    raw_bytes = target.read_bytes()
+    try:
+        content = raw_bytes.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise ValueError(f"Skill file is not UTF-8 text: {path}") from exc
+
+    file_format = "code"
+    preview_data_url = None
+    if suffix in {".md", ".mdx"}:
+        file_format = "markdown"
+    elif suffix in {".yaml", ".yml"}:
+        file_format = "yaml"
+        media_type = media_type or "application/yaml"
+    elif suffix == ".svg" or "<svg" in content[:500].lower():
+        file_format = "svg"
+        media_type = "image/svg+xml"
+        encoded = base64.b64encode(content.encode("utf-8")).decode("ascii")
+        preview_data_url = f"data:image/svg+xml;base64,{encoded}"
+    elif suffix in {".txt", ".text", ".log"}:
+        file_format = "text"
+        media_type = media_type or "text/plain"
+
+    return {
+        "root": str(root),
+        "path": relative_path,
+        "content": content,
+        "updated_at": updated_at,
+        "format": file_format,
+        "media_type": media_type or "text/plain",
+        "encoding": "utf-8",
+        "preview_data_url": preview_data_url,
+        "editable": True,
+    }
+
+
+def write_skill_library_file(path: str, content: str) -> dict[str, Any]:
+    root = get_global_skills_root()
+    target = resolve_skill_library_path(path, allow_missing=True)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(content, encoding="utf-8")
+    return read_skill_library_file(target.relative_to(root).as_posix())
+
+
+def install_skills(source: str, skill_names: list[str] | None = None) -> dict[str, Any]:
+    normalized_source = _trimmed(source)
+    if not normalized_source:
+        raise ValueError("Skill source is required.")
+
+    args = [
+        "add",
+        normalized_source,
+        "--global",
+        "--agent",
+        SKILLS_AGENT_NAME,
+        "-y",
+        "--copy",
+    ]
+    for skill_name in skill_names or []:
+        normalized_name = _trimmed(skill_name)
+        if normalized_name:
+            args.extend(["--skill", normalized_name])
+
+    completed = _run_skills_cli(args)
+    output = _sanitize_cli_output(completed.stdout, completed.stderr)
+    if completed.returncode != 0:
+        raise ValueError(output or "Failed to install skills.")
+
+    snapshot = get_installed_skills_snapshot()
+    snapshot["output"] = output
+    return snapshot
+
+
+def remove_skills(skill_names: list[str]) -> dict[str, Any]:
+    normalized_names = [_trimmed(skill_name) for skill_name in skill_names]
+    target_names = [skill_name for skill_name in normalized_names if skill_name]
+    if not target_names:
+        raise ValueError("At least one skill name is required.")
+
+    args = [
+        "remove",
+        "--global",
+        *target_names,
+        "--agent",
+        SKILLS_AGENT_NAME,
+        "-y",
+    ]
+    completed = _run_skills_cli(args)
+    output = _sanitize_cli_output(completed.stdout, completed.stderr)
+    if completed.returncode != 0:
+        raise ValueError(output or "Failed to remove skills.")
+
+    snapshot = get_installed_skills_snapshot()
+    snapshot["output"] = output
+    return snapshot
 
 
 def get_integration_snapshot() -> dict[str, Any]:

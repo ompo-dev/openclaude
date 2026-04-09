@@ -6,13 +6,20 @@ import {
   GitOverview,
   IntegrationConfigPayload,
   IntegrationSnapshot,
+  TopicMutationResponse,
+  SkillFileSnapshot,
+  SkillLibrarySnapshot,
   OpenEditorLaunchResponse,
   OpenWithLaunchResponse,
   OpenWithTargetsResponse,
+  SkillsMutationResponse,
+  SkillsSnapshot,
   SlashCatalogSnapshot,
   TerminalSnapshot,
   TerminalCompletionSnapshot,
   TopicRecord,
+  WorkspaceFileSearchResponse,
+  WorkspaceSnippetMatchResponse,
   WorkspaceBootstrapResponse,
   WorkspaceContext
 } from '@/types/integration'
@@ -96,6 +103,118 @@ export const getSlashCatalogAPI = async (
   if (!response.ok) {
     const detail = await response.text()
     throw new Error(detail || 'Failed to load slash catalog')
+  }
+
+  return response.json()
+}
+
+export const getInstalledSkillsAPI = async (
+  endpoint: string,
+  authToken?: string
+): Promise<SkillsSnapshot> => {
+  const response = await fetch(`${endpoint}/integration/skills`, {
+    method: 'GET',
+    headers: createHeaders(authToken)
+  })
+
+  if (!response.ok) {
+    const detail = await response.text()
+    throw new Error(detail || 'Failed to load installed skills')
+  }
+
+  return response.json()
+}
+
+export const getSkillLibraryAPI = async (
+  endpoint: string,
+  authToken?: string
+): Promise<SkillLibrarySnapshot> => {
+  const response = await fetch(`${endpoint}/integration/skills/library`, {
+    method: 'GET',
+    headers: createHeaders(authToken)
+  })
+
+  if (!response.ok) {
+    const detail = await response.text()
+    throw new Error(detail || 'Failed to load skills library')
+  }
+
+  return response.json()
+}
+
+export const getSkillFileAPI = async (
+  endpoint: string,
+  path: string,
+  authToken?: string
+): Promise<SkillFileSnapshot> => {
+  const response = await fetch(
+    `${endpoint}/integration/skills/file?path=${encodeURIComponent(path)}`,
+    {
+      method: 'GET',
+      headers: createHeaders(authToken)
+    }
+  )
+
+  if (!response.ok) {
+    const detail = await response.text()
+    throw new Error(detail || 'Failed to load skill file')
+  }
+
+  return response.json()
+}
+
+export const saveSkillFileAPI = async (
+  endpoint: string,
+  payload: { path: string; content: string },
+  authToken?: string
+): Promise<SkillFileSnapshot> => {
+  const response = await fetch(`${endpoint}/integration/skills/file`, {
+    method: 'PUT',
+    headers: createHeaders(authToken),
+    body: JSON.stringify(payload)
+  })
+
+  if (!response.ok) {
+    const detail = await response.text()
+    throw new Error(detail || 'Failed to save skill file')
+  }
+
+  return response.json()
+}
+
+export const installSkillsAPI = async (
+  endpoint: string,
+  payload: { source: string; skills?: string[] },
+  authToken?: string
+): Promise<SkillsMutationResponse> => {
+  const response = await fetch(`${endpoint}/integration/skills/install`, {
+    method: 'POST',
+    headers: createHeaders(authToken),
+    body: JSON.stringify(payload)
+  })
+
+  if (!response.ok) {
+    const detail = await response.text()
+    throw new Error(detail || 'Failed to install skills')
+  }
+
+  return response.json()
+}
+
+export const removeSkillsAPI = async (
+  endpoint: string,
+  payload: { skills: string[] },
+  authToken?: string
+): Promise<SkillsMutationResponse> => {
+  const response = await fetch(`${endpoint}/integration/skills/remove`, {
+    method: 'POST',
+    headers: createHeaders(authToken),
+    body: JSON.stringify(payload)
+  })
+
+  if (!response.ok) {
+    const detail = await response.text()
+    throw new Error(detail || 'Failed to remove skills')
   }
 
   return response.json()
@@ -471,7 +590,7 @@ export const createTopicAPI = async (
   endpoint: string,
   payload: { name: string; description?: string },
   authToken?: string
-): Promise<{ item: TopicRecord; items: TopicRecord[] }> => {
+): Promise<TopicMutationResponse> => {
   const response = await fetch(`${endpoint}/integration/topics`, {
     method: 'POST',
     headers: createHeaders(authToken),
@@ -481,6 +600,62 @@ export const createTopicAPI = async (
   if (!response.ok) {
     const detail = await response.text()
     throw new Error(detail || 'Failed to create topic')
+  }
+
+  return response.json()
+}
+
+export const updateTopicAPI = async (
+  endpoint: string,
+  topicId: string,
+  payload: { name: string },
+  authToken?: string
+): Promise<TopicMutationResponse> => {
+  const response = await fetch(`${endpoint}/integration/topics/${topicId}`, {
+    method: 'PUT',
+    headers: createHeaders(authToken),
+    body: JSON.stringify(payload)
+  })
+
+  if (!response.ok) {
+    const detail = await response.text()
+    throw new Error(detail || 'Failed to update topic')
+  }
+
+  return response.json()
+}
+
+export const deleteTopicAPI = async (
+  endpoint: string,
+  topicId: string,
+  authToken?: string
+): Promise<{ items: TopicRecord[] }> => {
+  const response = await fetch(`${endpoint}/integration/topics/${topicId}`, {
+    method: 'DELETE',
+    headers: createHeaders(authToken)
+  })
+
+  if (!response.ok) {
+    const detail = await response.text()
+    throw new Error(detail || 'Failed to delete topic')
+  }
+
+  return response.json()
+}
+
+export const openTopicInExplorerAPI = async (
+  endpoint: string,
+  topicId: string,
+  authToken?: string
+): Promise<{ target: string; path: string }> => {
+  const response = await fetch(`${endpoint}/integration/topics/${topicId}/open`, {
+    method: 'POST',
+    headers: createHeaders(authToken)
+  })
+
+  if (!response.ok) {
+    const detail = await response.text()
+    throw new Error(detail || 'Failed to open topic in explorer')
   }
 
   return response.json()
@@ -525,6 +700,46 @@ export const detachSessionFromTopicsAPI = async (
   if (!response.ok) {
     const detail = await response.text()
     throw new Error(detail || 'Failed to detach session from topics')
+  }
+
+  return response.json()
+}
+
+export const searchWorkspaceFilesAPI = async (
+  endpoint: string,
+  query: string,
+  authToken?: string
+): Promise<WorkspaceFileSearchResponse> => {
+  const response = await fetch(
+    `${endpoint}/integration/files/search?query=${encodeURIComponent(query)}`,
+    {
+      method: 'GET',
+      headers: createHeaders(authToken)
+    }
+  )
+
+  if (!response.ok) {
+    const detail = await response.text()
+    throw new Error(detail || 'Failed to search workspace files')
+  }
+
+  return response.json()
+}
+
+export const detectWorkspaceSnippetAPI = async (
+  endpoint: string,
+  snippet: string,
+  authToken?: string
+): Promise<WorkspaceSnippetMatchResponse> => {
+  const response = await fetch(`${endpoint}/integration/files/detect-snippet`, {
+    method: 'POST',
+    headers: createHeaders(authToken),
+    body: JSON.stringify({ snippet })
+  })
+
+  if (!response.ok) {
+    const detail = await response.text()
+    throw new Error(detail || 'Failed to detect snippet source')
   }
 
   return response.json()

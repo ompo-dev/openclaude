@@ -1,6 +1,7 @@
-import { useCallback } from 'react'
+import { useCallback, useEffect, useRef } from 'react'
 
 import { APIRoutes } from '@/api/routes'
+import { getWorkspaceContextAPI } from '@/api/integration'
 
 import useChatActions from '@/hooks/useChatActions'
 import { useStore } from '../store'
@@ -22,6 +23,7 @@ const useAIChatStreamHandler = () => {
   const selectedEndpoint = useStore((state) => state.selectedEndpoint)
   const authToken = useStore((state) => state.authToken)
   const mode = useStore((state) => state.mode)
+  const setWorkspaceContext = useStore((state) => state.setWorkspaceContext)
   const setStreamingErrorMessage = useStore(
     (state) => state.setStreamingErrorMessage
   )
@@ -29,7 +31,10 @@ const useAIChatStreamHandler = () => {
   const setSessionsData = useStore((state) => state.setSessionsData)
   const selectedTopicId = useStore((state) => state.selectedTopicId)
   const { streamResponse } = useAIResponseStream()
-  const { assignSessionToTopic, refreshWorkspaceContext } = useWorkspaceData()
+  const { assignSessionToTopic } = useWorkspaceData()
+  const liveWorkspaceRefreshTimerRef = useRef<number | null>(null)
+  const liveWorkspaceRefreshInFlightRef = useRef(false)
+  const liveWorkspaceRefreshLastAtRef = useRef(0)
 
   const updateMessagesWithErrorState = useCallback(() => {
     setMessages((prevMessages) => {
@@ -56,6 +61,62 @@ const useAIChatStreamHandler = () => {
       })
     },
     [setMessages]
+  )
+
+  const clearWorkspaceSnapshotTimer = useCallback(() => {
+    if (liveWorkspaceRefreshTimerRef.current !== null) {
+      window.clearTimeout(liveWorkspaceRefreshTimerRef.current)
+      liveWorkspaceRefreshTimerRef.current = null
+    }
+  }, [])
+
+  useEffect(
+    () => () => {
+      clearWorkspaceSnapshotTimer()
+    },
+    [clearWorkspaceSnapshotTimer]
+  )
+
+  const refreshWorkspaceSnapshotSilently = useCallback(async () => {
+    if (liveWorkspaceRefreshInFlightRef.current) return
+
+    liveWorkspaceRefreshInFlightRef.current = true
+    try {
+      const snapshot = await getWorkspaceContextAPI(selectedEndpoint, authToken)
+      setWorkspaceContext(snapshot)
+      attachWorkspaceSnapshot(snapshot)
+    } catch {
+      // background refresh is best effort while streaming
+    } finally {
+      liveWorkspaceRefreshInFlightRef.current = false
+      liveWorkspaceRefreshLastAtRef.current = Date.now()
+    }
+  }, [
+    attachWorkspaceSnapshot,
+    authToken,
+    selectedEndpoint,
+    setWorkspaceContext
+  ])
+
+  const scheduleWorkspaceSnapshotRefresh = useCallback(
+    (priority: 'normal' | 'immediate' = 'normal') => {
+      if (priority === 'normal' && liveWorkspaceRefreshTimerRef.current !== null) {
+        return
+      }
+
+      if (priority === 'immediate') {
+        clearWorkspaceSnapshotTimer()
+      }
+
+      const elapsed = Date.now() - liveWorkspaceRefreshLastAtRef.current
+      const delay = priority === 'immediate' ? 0 : Math.max(0, 900 - elapsed)
+
+      liveWorkspaceRefreshTimerRef.current = window.setTimeout(() => {
+        liveWorkspaceRefreshTimerRef.current = null
+        void refreshWorkspaceSnapshotSilently()
+      }, delay)
+    },
+    [clearWorkspaceSnapshotTimer, refreshWorkspaceSnapshotSilently]
   )
 
   /**
@@ -250,6 +311,7 @@ const useAIChatStreamHandler = () => {
                 }
                 return newMessages
               })
+              scheduleWorkspaceSnapshotRefresh()
             } else if (
               chunk.event === RunEvent.RunContent ||
               chunk.event === RunEvent.TeamRunContent
@@ -319,6 +381,7 @@ const useAIChatStreamHandler = () => {
                 }
                 return newMessages
               })
+              scheduleWorkspaceSnapshotRefresh()
             } else if (
               chunk.event === RunEvent.ReasoningStep ||
               chunk.event === RunEvent.TeamReasoningStep
@@ -337,6 +400,7 @@ const useAIChatStreamHandler = () => {
                 }
                 return newMessages
               })
+              scheduleWorkspaceSnapshotRefresh()
             } else if (
               chunk.event === RunEvent.ReasoningCompleted ||
               chunk.event === RunEvent.TeamReasoningCompleted
@@ -360,7 +424,7 @@ const useAIChatStreamHandler = () => {
               chunk.event === RunEvent.TeamRunCancelled
             ) {
               updateMessagesWithErrorState()
-              void refreshWorkspaceContext().then(attachWorkspaceSnapshot)
+              scheduleWorkspaceSnapshotRefresh('immediate')
               const errorContent =
                 (chunk.content as string) ||
                 (chunk.event === RunEvent.TeamRunCancelled
@@ -385,7 +449,7 @@ const useAIChatStreamHandler = () => {
               chunk.event === RunEvent.RunCompleted ||
               chunk.event === RunEvent.TeamRunCompleted
             ) {
-              void refreshWorkspaceContext().then(attachWorkspaceSnapshot)
+              scheduleWorkspaceSnapshotRefresh('immediate')
               setMessages((prevMessages) => {
                 const newMessages = prevMessages.map((message, index) => {
                   if (
@@ -431,7 +495,7 @@ const useAIChatStreamHandler = () => {
           },
           onError: (error) => {
             updateMessagesWithErrorState()
-            void refreshWorkspaceContext().then(attachWorkspaceSnapshot)
+            scheduleWorkspaceSnapshotRefresh('immediate')
             setStreamingErrorMessage(error.message)
             if (newSessionId) {
               setSessionsData(
@@ -446,6 +510,7 @@ const useAIChatStreamHandler = () => {
         })
       } catch (error) {
         updateMessagesWithErrorState()
+        scheduleWorkspaceSnapshotRefresh('immediate')
         setStreamingErrorMessage(
           error instanceof Error ? error.message : String(error)
         )
@@ -481,8 +546,7 @@ const useAIChatStreamHandler = () => {
       setSessionId,
       processChunkToolCalls,
       assignSessionToTopic,
-      refreshWorkspaceContext,
-      attachWorkspaceSnapshot
+      scheduleWorkspaceSnapshotRefresh
     ]
   )
 

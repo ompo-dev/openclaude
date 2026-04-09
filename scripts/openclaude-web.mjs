@@ -162,21 +162,45 @@ async function isPortFree(port, bindHost = host) {
 
 function cleanupWindowsStack() {
   const launcherPattern = path.join(rootDir, 'scripts', 'start-agno.ps1')
+  const apiScriptPattern = path.join(rootDir, 'python', 'agno_server.py')
+  const uiPathPattern = path.join(rootDir, 'apps', 'agent-ui')
   const script = [
     '$ErrorActionPreference = "SilentlyContinue"',
     `$launcherPattern = ${toPowerShellString(launcherPattern)}`,
+    `$apiScriptPattern = ${toPowerShellString(apiScriptPattern)}`,
+    `$uiPathPattern = ${toPowerShellString(uiPathPattern)}`,
+    '$normalize = { param($value) if (-not $value) { return "" } return ($value -replace "\\\\", "/").ToLowerInvariant() }',
+    '$normalizedLauncher = & $normalize $launcherPattern',
+    '$normalizedApiScript = & $normalize $apiScriptPattern',
+    '$normalizedUiPath = & $normalize $uiPathPattern',
     '$targets = Get-CimInstance Win32_Process | Where-Object {',
-    '  $_.ProcessId -ne $PID -and',
-    '  $_.CommandLine -and',
-    '  $_.CommandLine.Contains($launcherPattern) -and',
-    '  ($_.CommandLine.Contains("-ServerOnly") -or $_.CommandLine.Contains("-UiOnly"))',
-    '}',
-    '$pids = $targets | Select-Object -ExpandProperty ProcessId -Unique',
-    '$pids | ForEach-Object { taskkill.exe /PID $_ /T /F | Out-Null }',
-    'Start-Sleep -Milliseconds 1200',
+    '  if ($_.ProcessId -eq $PID -or -not $_.CommandLine) { return $false }',
+    '  $command = & $normalize $_.CommandLine',
+    '  return ($command.Contains($normalizedLauncher)) -or ($command.Contains($normalizedApiScript)) -or ($command.Contains($normalizedUiPath)) -or ($_.Name -match "^python(\\.exe)?$" -and $command -match "agno_server\\.py")',
+    '} | Select-Object -ExpandProperty ProcessId -Unique',
+    '$targets | ForEach-Object { Write-Output $_ }',
   ].join('; ')
 
-  spawnSync('powershell.exe', ['-NoLogo', '-NoProfile', '-Command', script], {
+  const listResult = spawnSync('powershell.exe', ['-NoLogo', '-NoProfile', '-Command', script], {
+    cwd: rootDir,
+    encoding: 'utf-8',
+    windowsHide: true,
+  })
+
+  const candidatePids = String(listResult.stdout || '')
+    .split(/\r?\n/)
+    .map(value => Number(value.trim()))
+    .filter(value => Number.isInteger(value) && value > 0)
+
+  for (const pid of candidatePids) {
+    spawnSync('taskkill.exe', ['/PID', String(pid), '/T', '/F'], {
+      cwd: rootDir,
+      stdio: 'ignore',
+      windowsHide: true,
+    })
+  }
+
+  spawnSync('powershell.exe', ['-NoLogo', '-NoProfile', '-Command', 'Start-Sleep -Milliseconds 1500'], {
     cwd: rootDir,
     stdio: 'ignore',
     windowsHide: true,
